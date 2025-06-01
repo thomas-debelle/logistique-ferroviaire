@@ -6,7 +6,7 @@ struct Probleme
     E: arcs du réseau. clé=description de l'arc, val=durée de parcours
     M: motrices. clé=identifiant de la motrice, val=noeud correspondant à la boucle de départ.
     W: wagons. clé=identifiant du wagon, val=noeud correspondant à la boucle de départ.
-    P: planing du réseau. clé=identifiant du wagon, val1=noeud de destination, val2=borne min fenêtre temporelle, val3=borne max fenêtre temporelle.
+    P: planning des wagons. clé=identifiant d'un wagon, val=vecteur de paires (noeud, tmax) correspondant aux étapes du trajet prévu pour le wagon.
     C: capacité des motrices.
     T: horizon temporel.
     =#
@@ -14,7 +14,7 @@ struct Probleme
     E::Dict{Tuple{Int, Int}, Int}
     M::Dict{Int, Int}
     W::Dict{Int, Int}
-    P::Dict{Int, Tuple{Int, Int, Int}}
+    P::Dict{Int, Vector{Tuple{Int, Int}}}
     C::Int
     T::Int
 end
@@ -179,22 +179,6 @@ function verifierAdmissibilite(prob::Probleme, sol::Solution)::Bool
         end
     end
 
-
-    # Respect des commandes
-    for (w, p) in prob.P
-        atteint = false
-        for t = 1:T
-            if sol.EW[w][t] == (p[1], p[1])                 # Si le wagon est en stationnement sur son noeud de destination, alors la commande est remplie
-                atteint = true
-                break
-            end
-        end
-
-        if !atteint
-            return false
-        end
-    end
-
     return true
 end
 
@@ -205,26 +189,24 @@ function evaluerSolution(prob::Probleme, sol::Solution)::Int
     =#
     T = prob.T
     P = prob.P
+    V = prob.V
+    W = prob.W
 
     obj = 0
-    for (w, p) in P
-        dest = (p[1], p[1])     # Arc de destination
-        tmin = p[2]
-        tmax = p[3]
 
-        for t=1:(T-1)
-            pred = sol.EW[w][t]
-            suiv = sol.EW[w][t+1]
-            if pred != suiv && suiv == dest         # Si on arrive dans le noeud de destination, alors on calcul l'écart avec la fenêtre
-                if t < tmin
-                    obj = obj + (tmin - t)
-                elseif t > tmax
-                    obj = obj + (t - tmax)
-                end
-            end
-        end
+
+    # On commence par s'assurer que les plannings de chaque wagon soient triés chronologiquement selon la valeur tmax
+    for (k, v) in P
+        P[k] = sort(v, by = x -> x[2])
     end
 
+    # Pour chaque wagon, on extrait ensuite le trajet parcouru dans la solution
+    # TODO
+
+    # On associe enfin les étapes prévues dans le planning avec les instants de passage réels
+    # TODO
+
+    obj = 0
     return obj
 end
 
@@ -250,7 +232,7 @@ function main()
     P[1] = (3, 1, 3)
 
     C = 1
-    T = 6           # TODO: remplir automatiquement les vecteurs de la solution pour correspondre à un horizon temporel (à faire dans une fonction spécifique)
+    T = 6           # TODO: remplir automatiquement les vecteurs de la solution pour correspondre à l'horizon temporel (à faire dans une fonction spécifique)
 
     prob = Probleme(V, E, M, W, P, C, T)
 
