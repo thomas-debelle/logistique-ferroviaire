@@ -1,71 +1,209 @@
+using DataStructures
 
-
-struct noeuds
+const Arc = Tuple{Int, Int}
+struct Probleme
     noeuds::Vector{Int}
-    arcs::Dict{Tuple{Int, Int}, Int}                    # clé: (noeud départ, noeud arrivée), val: temps de parcours
-    motrices::Dict{Int, Int}                            # clé: motrice, val: noeud de départ
-    wagons::Dict{Int, Int}                              # clé: wagon, val: noeud de départ
-    planning::Dict{Int, Vector{Tuple{Int, Int}}}        # clé: wagon, val: (noeud d'arrivée, temps d'arrivée théorique)
+    arcs::Dict{Arc, Int}                    # clé: (noeud départ, noeud arrivée), val: temps de parcours
+    motrices::Dict{Int, Int}                # clé: motrice, val: noeud de départ
+    wagons::Dict{Int, Int}                  # clé: wagon, val: noeud de départ
+    planning::Dict{Int, Vector{Arc}}        # clé: wagon, val: (noeud d'arrivée, temps d'arrivée théorique)
     capacite::Int
     horizonTemp::Int
 end
 
-struct Solution
-    trajetMotrices::Dict{Int, Vector{Tuple{Int, Int}}}      # clé: motrice, val: trajet (liste d'arcs parcourus)
-    trajetWagons::Dict{Int, Vector{Tuple{Int, Int}}}        # clé: wagon: val: trajet (liste d'arcs parcourus)
-    affectations::Dict{Int, Vector{Int}}                    # clé: wagon, val: liste des motrices d'affectations sucessives. Si l'aff. est <= 0, alors le wagon n'est affecté à aucune motrice.
+abstract type Mouvement end
+
+struct Attendre <: Mouvement
+    noeud::Int
+    duree::Int
 end
 
-function estBoucle(arc::Tuple{Int, Int})::Bool
+struct Atteler <: Mouvement
+    wagon::Int
+end
+
+struct Deposer <: Mouvement
+    wagon::Int
+    noeud::Int
+end
+
+# Solution à un problème. Une solution détaille l'ensemble des mouvements successifs d'une motrice, qui peuvent être de plusieurs types.
+const Solution = Dict{Int, Vector{Mouvement}}                     # clé: motrice, val: liste des mouvements de la motrice. 
+
+const Trajets = Dict{Int, Vector{Arc}}       
+const Affectations = Dict{Int, Vector{Int}}                     # clé: wagon, val: liste des motrices d'affectations sucessives. Si l'aff. est <= 0, alors le wagon n'est affecté à aucune motrice.
+struct Plan
+    #=
+    Plan détaillé du parcours des motrices, et du parcours et des affectations des wagons.
+    Un plan peut être généré à partir d'une solution en utilisant un algorithme de pathfinding pour compléter les mouvements dans l'ordre.
+    =#
+    trajetMotrices::Trajets                                     # clé: motrice, val: trajet (liste d'arcs parcourus)
+    trajetWagons::Trajets                                       # clé: wagons, val: trajet (liste d'arcs parcourus)
+    affectations::Affectations                    
+end
+
+function estBoucle(arc::Arc)::Bool
     #=
     Retourne true si l'arc passé en argument est une boucle.
     =#
     return arc[1] == arc[2]
 end
 
-function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
+function dijkstra(probleme::Probleme, depart::Int, arrivee::Int)
+    # Initialisation des temps de parcours et des prédécesseurs
+    distances = Dict{Int, Int}()
+    predecesseurs = Dict{Int, Int}()
+    for noeud in probleme.noeuds
+        distances[noeud] = typemax(Int)
+    end
+    distances[depart] = 0
+
+    # File de priorité (min-heap) pour stocker les noeuds à explorer
+    pq = PriorityQueue{Int, Int}()
+    enqueue!(pq, depart => 0)
+
+    while !isempty(pq)
+        
+        noeud, distanceActuelle = dequeue_pair!(pq)             # Extraction du noeud avec la plus petite distance
+        if distanceActuelle > distances[noeud]                  # Si on a déjà trouvé un chemin plus court vers ce noeud, ignorer
+            continue
+        end
+
+        # Si le noeud actuel est le noeud d'arrivée, on a trouvé le chemin le plus court
+        if noeud == arrivee
+            chemin = Int[]
+            noeudActuel = arrivee
+            while haskey(predecesseurs, noeudActuel)
+                pushfirst!(chemin, noeudActuel)
+                noeudActuel = predecesseurs[noeudActuel]
+            end
+            pushfirst!(chemin, depart)                          # Ajout du noeud de départ
+            return distances[arrivee], chemin
+        end
+
+        # Parcourir les voisins du noeud actuel
+        for (arc, poidsArc) in probleme.arcs
+            if arc[1] == noeud
+                v = arc[2]
+                nouvelleDistance = distanceActuelle + poidsArc
+
+                # Si un chemin plus court est trouvé vers v
+                if nouvelleDistance < distances[v]
+                    distances[v] = nouvelleDistance
+                    predecesseurs[v] = noeud
+                    enqueue!(pq, v => nouvelleDistance)
+                end
+            end
+        end
+    end
+
+    # Si le noeud d'arrivée n'est pas atteignable
+    return -1, Int[]
+end
+
+function construireTrajet(prob::Probleme, depart::Int, arrivee::Int)::Vector
     #=
-    Retourne true si la solution est admissible pour le problème passé en argument.
+    Retourne le trajet développé entre deux noeuds d'un problème.
     =#
-    # TODO: afficher des motifs d'inadmissibilité pour la solution
+    cout, chemin = dijkstra(prob, depart, arrivee)
+    trajet = []
+    for i=1:(size(chemin,1)-1)
+        arc = (chemin[i], chemin[i+1])
+        dureeParcours = prob.arcs[arc]
+        for d in 1:dureeParcours
+            push!(trajet, arc)
+        end
+    end
+    return trajet
+end
+
+function construirePlan(prob::Probleme, sol::Solution)::Plan
+    #=
+    Construit un plan à partir d'une solution.
+    =#
+    trajetMotrices = Trajets()
+    trajetWagons = Trajets()
+
+    # Initialisation des trajets à partir des conditions initiales du problème
+    for (m, noeudDepart) in prob.motrices
+        trajetMotrices[m] = [(noeudDepart, noeudDepart)]
+    end
+
+    for (w, noeudDepart) in prob.wagons
+        trajetWagons[w] = [(noeudDepart, noeudDepart)]
+    end
+
+    # Réalisation des mouvements
+    # TODO: voir comment gérer les éventuels conflits pour emprunter la même voie
+    for (m, mouvements) in sol
+        for mouvement in mouvements
+            if mouvement isa Attendre
+                dest = mouvement.noeud
+                trajet = construireTrajet(prob, last(trajetMotrices[m])[1], dest)
+                append!(trajetMotrices[m], trajet)              # Ajout du trajet jusqu'au noeud d'attente
+                for d in 1:mouvement.duree
+                    push!(trajetMotrices[m], (dest, dest))      # Ajout de l'attente
+                end
+            elseif mouvement isa Atteler
+                # TODO: chercher l'emplacement du wagon 
+                # Comment gérer les conflits d'attelage (si le wagon est déjà attelé à une autre motrice) -> ignorer simplement ?
+                # Calculer le temps pour se rendre jusqu'au noeud de destination, et voir quelle est l'affectation du wagon à cet instant.
+                # Réaliser le mouvement dans tous les cas, même si conflit d'attelage ?
+            elseif mouvement isa Deposer
+
+            end
+        end
+    end
+end
+
+function verifierPlan(prob::Probleme, plan::Plan)::Bool
+    #=
+    Retourne true si le plan est admissible pour le problème passé en argument.
+    =#
     horizonTemp = prob.horizonTemp
 
 
     # Cohérence de l'horizon temporel
-    for trajet in values(sol.trajetMotrices)
+    for trajet in values(plan.trajetMotrices)
         if length(trajet) != horizonTemp
+            @info "Les trajets des motrices ne correspondent pas à l'horizon temporel du problème."
             return false
         end
     end
-    for trajet in values(sol.trajetWagons)
+    for trajet in values(plan.trajetWagons)
         if length(trajet) != horizonTemp
+            @info "Les trajets des wagons ne correspondent pas à l'horizon temporel du problème."
             return false
         end
     end
-    for aff in values(sol.affectations)
+    for aff in values(plan.affectations)
         if length(aff) != horizonTemp
+            @info "Les affectations ne correspondent pas à l'horizon temporel du problème."
             return false
         end
     end
 
     # Respect de la structure du problème
-    for (m, trajet) in sol.trajetMotrices
+    for (m, trajet) in plan.trajetMotrices
         noeudDepart = get(prob.motrices, m, -1)
         if !(m in keys(prob.motrices)) || (noeudDepart, noeudDepart) != trajet[1]
+            @info "Les trajets des motrices ne respectent pas la structure du problème."
             return false
         end
     end
-    for (w, trajet) in sol.trajetWagons
+    for (w, trajet) in plan.trajetWagons
         noeudDepart = get(prob.wagons, w, -1)
         if !(w in keys(prob.wagons)) || (noeudDepart, noeudDepart) != trajet[1]
+            @info "Les trajets des wagons ne respectent pas la structure du problème."
             return false
         end
     end
 
     # Immobilisation des wagons
     for t = 1:(horizonTemp-1)
-        for (w, a) in sol.affectations     # a : vecteur contenant les affectations successives d'un wagon (identifiants de motrices).
-            if a[t] <= 0 && sol.trajetWagons[w][t] != sol.trajetWagons[w][t+1]       # Si le wagon n'a pas d'affectation et change d'arc entre les instants t et t+1
+        for (w, a) in plan.affectations     # a : vecteur contenant les affectations successives d'un wagon (identifiants de motrices).
+            if a[t] <= 0 && plan.trajetWagons[w][t] != plan.trajetWagons[w][t+1]       # Si le wagon n'a pas d'affectation et change d'arc entre les instants t et t+1
+                @info "Un wagon a changé d'arc alors qu'il n'été affecté à aucune motrice."
                 return false
             end
         end
@@ -73,8 +211,9 @@ function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
 
     # Affectation des wagons
     for t = 1:(horizonTemp-1)
-        for (w, a) in sol.affectations
-            if a[t] != a[t+1] && !estBoucle(sol.trajetWagons[w][t]) 
+        for (w, a) in plan.affectations
+            if a[t] != a[t+1] && !estBoucle(plan.trajetWagons[w][t]) 
+                @info "Une affectation/désaffectation a été réalisée hors d'un arc de stationnement."
                 return false
             end
         end
@@ -82,9 +221,10 @@ function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
 
     # Déplacement des wagons
     for t = 1:horizonTemp
-        for (w, a) in sol.affectations
+        for (w, a) in plan.affectations
             m = a[t]
-            if a[t] > 0 && sol.trajetWagons[w][t] != sol.trajetMotrices[m][t]
+            if a[t] > 0 && plan.trajetWagons[w][t] != plan.trajetMotrices[m][t]
+                @info "Un wagon ne s'est pas déplacé avec sa motrice d'affectation."
                 return false
             end
         end
@@ -92,8 +232,8 @@ function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
 
     # Capacité des motrices
     for t = 1:horizonTemp
-        affInstantT = Dict(w => a[t] for (w, a) in sol.affectations)        # Génère un nouveau dictionaire avec les affectations à l'instant t
-        compteursMotrices = Dict{Int, Int}()                                # Compteur des occurences de chaque motrice
+        affInstantT = Dict(w => a[t] for (w, a) in plan.affectations)       # Nouveau dictionaire avec les affectations à l'instant t
+        compteursMotrices = Dict{Int, Int}()                                # Compteur d'occurences pour chaque motrice
         for a in values(affInstantT)
             if a <= 0
                 continue                                                    # Pas de décompte si le wagon n'a pas d'affectation
@@ -107,7 +247,8 @@ function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
         end
 
         val = values(compteursMotrices)
-        if length(val) > 0 && maximum(val) > prob.capacite               # Si les affectations dépassent la capacité des motrices
+        if length(val) > 0 && maximum(val) > prob.capacite                  # Si les affectations dépassent la capacité des motrices
+            @info "La capacité d'une motrice n'a pas été respectée."
             return false
         end
     end
@@ -115,8 +256,9 @@ function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
     # Existence des arcs empruntés
     for t = 1:horizonTemp
         for m in keys(prob.motrices)
-            for e in sol.trajetMotrices[m]
+            for e in plan.trajetMotrices[m]
                 if !(e in keys(prob.arcs))
+                    @info "Un motrice a emprunté un arc qui n'existe pas."
                     return false
                 end
             end
@@ -126,9 +268,10 @@ function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
     # Continuité des parcours
     for t = 1:(horizonTemp-1)
         for m = keys(prob.motrices)
-            e1 = sol.trajetMotrices[m][t]
-            e2 = sol.trajetMotrices[m][t+1]
+            e1 = plan.trajetMotrices[m][t]
+            e2 = plan.trajetMotrices[m][t+1]
             if e1 != e2 && e1[2] != e2[1]           # Pour deux arcs successifs différents: si l'arc suivant ne commence pas à la fin de l'arc précédent, alors il y a discontinuité
+                @info "Une rupture dans la continuité du parcours a été détectée"
                 return false
             end
         end
@@ -136,9 +279,10 @@ function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
 
     # Exclusion des parcours sur un même arc
     for t = 1:horizonTemp
-        for (m1, trajet1) in sol.trajetMotrices      # ve1/ve2 : vecteurs contenant les arcs successivement empruntés par les motrices m1 et m2     # TODO : utiliser des noms plus explicites
-            for (m2, trajet2) in sol.trajetMotrices
+        for (m1, trajet1) in plan.trajetMotrices
+            for (m2, trajet2) in plan.trajetMotrices
                 if m1 != m2 && trajet1[t] == trajet2[t] && !estBoucle(trajet1[t])       # Si deux motrices différentes se retrouvent sur un même arc reliant deux noeuds différents (qui n'est pas une boucle)
+                    @info "Deux motrices parcourent un même arc entre deux noeuds en même temps."
                     return false
                 end
             end
@@ -148,8 +292,8 @@ function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
     # Temps de parcours des arcs
     for t = 1:(horizonTemp-1)
         for m = keys(prob.motrices)
-            pred = sol.trajetMotrices[m][t]
-            suiv = sol.trajetMotrices[m][t+1]
+            pred = plan.trajetMotrices[m][t]
+            suiv = plan.trajetMotrices[m][t+1]
 
             if pred == suiv || estBoucle(suiv)              # Si la motrice s'engage sur un nouvel arc qui n'est pas un arc de stationnement, alors on vérifie son temps de parcours 
                 continue
@@ -157,7 +301,8 @@ function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
 
             d = prob.arcs[suiv]            # Temps de parcours sur l'arc "suiv"
             for i = 2:min(d, (horizonTemp-1)-t)                       # On vérifie que les arcs succédant à l'arc "suiv" respectent le temps de parcours
-                if sol.trajetMotrices[m][t+i] != suiv
+                if plan.trajetMotrices[m][t+i] != suiv
+                    @info "Le temps de parcours d'un arc n'a pas été respecté."
                     return false
                 end
             end
@@ -167,9 +312,10 @@ function verifierAdmissibilite(prob::noeuds, sol::Solution)::Bool
     return true
 end
 
-function evaluerSolution(prob::noeuds, sol::Solution)::Int
+function evaluerPlan(prob::Probleme, sol::Plan)::Int
     #=
-    Calcule la valeur de la fonction objectif pour la solution passée en argument
+    Calcule la valeur de la fonction objectif pour le plan passé en argument.
+    TODO: ajouter une variante permettant de considérer t comme un délai maximum et non un horaire prévisionnel.
     =#
     horizonTemp = prob.horizonTemp
     planningTheorique = prob.planning
@@ -225,7 +371,7 @@ function main()
     # Construction d'un problème
     V = [1, 2, 3]
 
-    E = Dict{Tuple{Int, Int}, Int}()
+    E = Dict{Arc, Int}()
     E[(1, 1)] = 1
     E[(2, 2)] = 1
     E[(3, 3)] = 1
@@ -238,31 +384,35 @@ function main()
     W = Dict{Int, Int}()
     W[1] = 2
 
-    P = Dict{Int, Vector{Tuple{Int, Int}}}()        # TODO: simplifier la construction des éléments d'un problème
+    P = Dict{Int, Vector{Arc}}()
     P[1] = [(3, 5), (2, 6)]
 
     C = 1
     T = 6           # TODO: remplir automatiquement les vecteurs de la solution pour correspondre à l'horizon temporel (à faire dans une fonction spécifique)
 
-    prob = noeuds(V, E, M, W, P, C, T)
+    prob = Probleme(V, E, M, W, P, C, T)
 
-
-    # Construction d'une solution
-    EM = Dict{Int, Vector{Tuple{Int, Int}}}()
+    # Construction d'un plan
+    EM = Dict{Int, Vector{Arc}}()
     EM[1] = [(1, 1), (1, 2), (1, 2), (2, 2), (2, 3), (3, 3)]
 
-    EW = Dict{Int, Vector{Tuple{Int, Int}}}()
+    EW = Dict{Int, Vector{Arc}}()
     EW[1] = [(2, 2), (2, 2), (2, 2), (2, 2), (2, 3), (3, 3)]
 
     A = Dict{Int, Vector{Int}}()
     A[1] = [0, 0, 0, 1, 1, 1]
 
-    sol = Solution(EM, EW, A)
+    plan = Plan(EM, EW, A)
+
+    # Construction d'un plan à partir d'une solution
+    sol = Solution()
+    sol[1] = [Attendre(2, 1)]
+    construirePlan(prob, sol)
 
     
-    # Evaluation de l'admissibilité de la solution pour le problème
-    println(verifierAdmissibilite(prob, sol))
-    println(evaluerSolution(prob, sol))
+    # Evaluation de l'admissibilité du plan pour le problème
+    println(verifierPlan(prob, plan))
+    println(evaluerPlan(prob, plan))
 end
 
 main()
