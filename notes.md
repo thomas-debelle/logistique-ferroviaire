@@ -1,14 +1,10 @@
 ## TODO
 
-- Générer un plan à partir d'une solution. 
+- IMPORTANT: corriger la fonction de mutation pour s'assurer que toutes les solutions générées soient valides. Vérifier également le processus du recuit simulé (notamment les deepcopy).
 
-- Générer une solution initiale à un problème.
-
-- (En fonction de la métaheuristique) : générer un voisinage. Faire d'abord varier les affectations à chaque instant, puis faire varier les itinéraires en conséquence. Implémenter en dur un algorithme de pathfinding pour générer les meilleurs parcours jusqu'aux affectations. **Pour simplifier la recherche de voisinage, on pourrait utiliser des solutions sous la forme de missions** : par exemple, une nouvelle solution pourrait être trouvée en ajoutant juste "prendre wagon à pos" ou "lâche wagon à pos" et générer un pathfinding en conséquence. L'algorithme devrait naturellement favoriser les solutions qui évitent des déplacements inutiles aux motrices.
+- IMPORTANT: adapter la fonction d'évaluation pour ne pas sanctionner à Inf une solution, et générer des coûts intermédiaires.
 
 - Créer le code permettant de générer des instances du problème à partir du réseau SNCF.
-
-- Faire un choix entre l'Ant Colony Optimization (ACO) ou les Genetic Algorithms (GA).
 
 - Évaluer la complexité numérique du MILP. Donner le nombre de contraintes générées en fonction des différents paramètres du modèle : horizon temporel, taille du réseau, nombre de motrice, taille du planning...
 
