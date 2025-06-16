@@ -1,8 +1,8 @@
 ## TODO
 
-- IMPORTANT: corriger la fonction de mutation pour s'assurer que toutes les solutions générées soient valides. Vérifier également le processus du recuit simulé (notamment les deepcopy).
+- Terminer la fonction de mutation des solutions.
 
-- IMPORTANT: adapter la fonction d'évaluation pour ne pas sanctionner à Inf une solution, et générer des coûts intermédiaires.
+- Adapter ou supprimer les anciennes fonctions de génération directes de plan, pour privilégier la génération de solutions.
 
 - Créer le code permettant de générer des instances du problème à partir du réseau SNCF.
 

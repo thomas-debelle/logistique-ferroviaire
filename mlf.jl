@@ -1,5 +1,8 @@
 using DataStructures
 
+# --------------------------------------------
+# PROBLEME
+# --------------------------------------------
 const Arc = Tuple{Int, Int}
 struct Probleme
     noeuds::Vector{Int}
@@ -11,29 +14,329 @@ struct Probleme
     horizonTemp::Int
 end
 
+function estBoucle(arc::Arc)::Bool
+    """
+    Retourne true si l'arc passé en argument est une boucle.
+    """
+    return arc[1] == arc[2]
+end
+
+
+# --------------------------------------------
+# ACTIONS ET SOLUTION
+# --------------------------------------------
+# Paramètres:
+# - Attendre: durée
+# - SeDeplacer: noeud cible
+# - Atteler: wagon
+# - Deposer: wagon
+@enum TypeAction Attendre SeDeplacer Affecter Deposer
+
+struct Action
+    type::TypeAction
+    param::Int
+end
+
+# Solution à un problème. Une solution détaille l'ensemble des mouvements successifs d'une motrice, qui peuvent être de plusieurs types.
+const Solution = Dict{Int, Vector{Action}}                      # clé: motrice, val: liste des mouvements de la motrice. 
+
+function dijkstra(probleme::Probleme, depart::Int, arrivee::Int)
+    # Initialisation des temps de parcours et des prédécesseurs
+    distances = Dict{Int, Int}()
+    predecesseurs = Dict{Int, Int}()
+    for noeud in probleme.noeuds
+        distances[noeud] = typemax(Int)
+    end
+    distances[depart] = 0
+
+    # File de priorité (min-heap) pour stocker les noeuds à explorer
+    pq = PriorityQueue{Int, Int}()
+    enqueue!(pq, depart => 0)
+
+    while !isempty(pq)
+        
+        noeud, distanceActuelle = dequeue_pair!(pq)             # Extraction du noeud avec la plus petite distance
+        if distanceActuelle > distances[noeud]                  # Si on a déjà trouvé un chemin plus court vers ce noeud, ignorer
+            continue
+        end
+
+        # Si le noeud actuel est le noeud d'arrivée, on a trouvé le chemin le plus court
+        if noeud == arrivee
+            chemin = Int[]
+            noeudActuel = arrivee
+            while haskey(predecesseurs, noeudActuel)
+                pushfirst!(chemin, noeudActuel)
+                noeudActuel = predecesseurs[noeudActuel]
+            end
+            pushfirst!(chemin, depart)                          # Ajout du noeud de départ
+            return distances[arrivee], chemin
+        end
+
+        # Parcourir les voisins du noeud actuel
+        for (arc, poidsArc) in probleme.arcs
+            if arc[1] == noeud
+                v = arc[2]
+                nouvelleDistance = distanceActuelle + poidsArc
+
+                # Si un chemin plus court est trouvé vers v
+                if nouvelleDistance < distances[v]
+                    distances[v] = nouvelleDistance
+                    predecesseurs[v] = noeud
+                    enqueue!(pq, v => nouvelleDistance)
+                end
+            end
+        end
+    end
+
+    # Si le noeud d'arrivée n'est pas atteignable
+    return -1, Int[]
+end
+
+function construireTrajet(prob::Probleme, depart::Int, arrivee::Int)::Vector
+    """
+    Retourne le trajet développé entre deux noeuds d'un problème.
+    """
+    cout, chemin = dijkstra(prob, depart, arrivee)
+    trajet = []
+    for i=1:(size(chemin,1)-1)
+        arc = (chemin[i], chemin[i+1])
+        dureeParcours = prob.arcs[arc]
+        for d in 1:dureeParcours
+            push!(trajet, arc)
+        end
+    end
+    return trajet
+end
+
+
+# --------------------------------------------
+# PLAN
+# --------------------------------------------
 const Trajets = Dict{Int, Vector{Arc}}       
 const Affectations = Dict{Int, Vector{Int}}                     # clé: wagon, val: liste des motrices d'affectations sucessives. Si l'aff. est <= 0, alors le wagon n'est affecté à aucune motrice.
 struct Plan
-    #=
+    """
     Plan détaillé du parcours des motrices, et du parcours et des affectations des wagons.
     Un plan peut être généré à partir d'une solution en utilisant un algorithme de pathfinding pour compléter les mouvements dans l'ordre.
-    =#
+    """
     trajetMotrices::Trajets                                     # clé: motrice, val: trajet (liste d'arcs parcourus)
     trajetWagons::Trajets                                       # clé: wagons, val: trajet (liste d'arcs parcourus)
     affectations::Affectations                    
 end
 
-function estBoucle(arc::Arc)::Bool
-    #=
-    Retourne true si l'arc passé en argument est une boucle.
-    =#
-    return arc[1] == arc[2]
+function construirePlan(prob::Probleme, sol::Solution)::Plan
+    """
+    Construit un plan à partir d'une solution.
+    Aucune vérification d'admissibilité n'est réalisée à ce stade.
+    """
+    trajetMotrices = Trajets()
+    trajetWagons = Trajets()
+    affectations = Affectations()
+
+    # Initialisation des affectations des wagons
+    for w in keys(prob.wagons)
+        affectations[w] = fill(0, prob.horizonTemp)
+    end
+
+    # Initialisation des trajets à partir des conditions initiales du problème
+    for (m, noeudDepart) in prob.motrices
+        trajetMotrices[m] = [(noeudDepart, noeudDepart)]
+    end
+
+    for (w, noeudDepart) in prob.wagons
+        trajetWagons[w] = [(noeudDepart, noeudDepart)]
+        append!(trajetWagons[w], fill((0, 0), prob.horizonTemp - 1))        # Agrandissement du vecteur en amont pour optimiser le traitement
+    end
+
+    # Motrices & affectations: traitement des actions
+    for (m, actions) in sol         # Parcourt les actions de toutes les motrices
+        t = 2                       # Instant actuel (commence à 2 car l'arc de départ a déjà été ajouté)
+        for action in actions       # Traite les actions de la motrice m
+            if action.type == Attendre
+                duree = action.param
+                append!(trajetMotrices[m], fill(last(trajetMotrices[m]), duree))
+                t += duree
+            elseif action.type == SeDeplacer
+                noeudArrivee = action.param
+                trajet = construireTrajet(prob, last(trajetMotrices[m])[1], noeudArrivee)   # Calcul de l'itinéraire avec l'algorithme de Dijkstra.
+                append!(trajetMotrices[m], trajet)
+                t += length(trajet)
+            elseif action.type == Affecter
+                wagon = action.param
+                i = t
+                while i <= length(affectations[wagon]) && affectations[wagon][i] == 0       # Affectation à partir de t jusqu'à la fin de l'horizon temporel (ou la prochaine affectation)
+                    affectations[wagon][i] = m
+                    i += 1
+                end
+                # Ajout du temps d'attache du wagon 
+                arcActuel = (last(trajetMotrices[m])[2], last(trajetMotrices[m])[2])
+                append!(trajetMotrices[m], [arcActuel])
+                t += 1
+            elseif action.type == Deposer
+                wagon = action.param
+                i = t+1
+                while i <= length(affectations[wagon]) && affectations[wagon][i] == m       # Désaffectation à partir de t jusqu'à la fin de l'horizon temporel (ou la prochaine affectation)
+                    affectations[wagon][i] = 0      # Le wagon est toujours considéré comme affecté lors de la dépose
+                    i += 1
+                end
+                # Ajout du temps de dépôt du wagon
+                arcActuel = (last(trajetMotrices[m])[2], last(trajetMotrices[m])[2])
+                append!(trajetMotrices[m], [arcActuel])
+                t += 1
+            end
+        end
+
+        # Vérification de la longueur des vecteurs
+        if length(trajetMotrices[m]) > prob.horizonTemp
+            deleteat!(trajetMotrices[m], prob.horizonTemp+1:length(trajetMotrices[m]))      # Suppression des mouvements dépassant de l'horizon temporel
+        elseif length(trajetMotrices[m]) < prob.horizonTemp
+            arcActuel = (last(trajetMotrices[m])[2], last(trajetMotrices[m])[2])            # Ajout d'attentes pour compléter l'horizon temporel
+            append!(trajetMotrices[m], fill(arcActuel, prob.horizonTemp - t + 1))
+        end
+    end
+
+    # Wagons: génération des déplacements en fonction des actions des motrices
+    for w in keys(prob.wagons)
+        for t=2:prob.horizonTemp
+            m = affectations[w][t]
+            if m == 0
+                # Attente
+                arcActuel = (trajetWagons[w][t - 1][2], trajetWagons[w][t - 1][2])
+                trajetWagons[w][t] = arcActuel
+            else
+                # Suivi de la motrice
+                trajetWagons[w][t] = trajetMotrices[m][t]
+            end
+        end
+    end
+
+    plan = Plan(trajetMotrices, trajetWagons, affectations)
+    return plan
+end
+
+function genererPlanVierge(prob::Probleme)::Plan
+    T = prob.horizonTemp
+    C = prob.capacite
+    arcs = collect(keys(prob.arcs))
+
+    trajetMotrices = Dict{Int, Vector{Arc}}()
+    trajetWagons = Dict{Int, Vector{Arc}}()
+    affectations = Dict{Int, Vector{Int}}()
+
+    for (m, noeud) in prob.motrices
+        trajet = Vector{Arc}(undef, T)
+        for t in 1:T
+            trajet[t] = (noeud, noeud)  # boucle par défaut
+        end
+        trajetMotrices[m] = trajet
+    end
+
+    for (w, noeud) in prob.wagons
+        trajet = Vector{Arc}(undef, T)
+        aff = Vector{Int}(undef, T)
+        for t in 1:T
+            trajet[t] = (noeud, noeud)
+            aff[t] = 0
+        end
+        trajetWagons[w] = trajet
+        affectations[w] = aff
+    end
+
+    return Plan(trajetMotrices, trajetWagons, affectations)
+end
+
+function genererPlanAleatoire(prob::Probleme)::Plan
+    horizon = prob.horizonTemp
+    capacite = prob.capacite
+
+    trajetMotrices = Dict{Int, Vector{Arc}}()
+    tempsRestantMotrices = Dict{Int, Int}()
+    trajetWagons = Dict{Int, Vector{Arc}}()
+    affectations = Dict{Int, Vector{Int}}()
+
+    for (m, nd) in prob.motrices
+        trajetMotrices[m] = Vector{Arc}(undef, horizon)
+        trajetMotrices[m][1] = (nd, nd)
+        tempsRestantMotrices[m] = 0
+    end
+
+    for (w, nd) in prob.wagons
+        trajetWagons[w] = Vector{Arc}(undef, horizon)
+        trajetWagons[w][1] = (nd, nd)
+        affectations[w] = fill(0, horizon)
+    end
+
+    for t in 2:horizon
+        ## MOTRICES
+        arcsOccupes = Set{Arc}()
+
+        for m in sort(collect(keys(prob.motrices)))  # ordre fixe pour reproductibilité
+            prevArc = trajetMotrices[m][t-1]
+            if tempsRestantMotrices[m] > 0
+                trajetMotrices[m][t] = prevArc
+                tempsRestantMotrices[m] -= 1
+                if prevArc[1] != prevArc[2]
+                    push!(arcsOccupes, prevArc)
+                end
+            else
+                noeud = prevArc[2]
+                candidats = [a for a in keys(prob.arcs) if a[1] == noeud &&
+                    (a[1] == a[2] || !(a in arcsOccupes))]
+                if isempty(candidats)
+                    trajetMotrices[m][t] = (noeud, noeud)
+                    tempsRestantMotrices[m] = 0
+                else
+                    arc = rand(candidats)
+                    duree = prob.arcs[arc]
+                    for dt in 0:min(duree-1, horizon-t)
+                        trajetMotrices[m][t+dt] = arc
+                        if arc[1] != arc[2] && dt == 0
+                            push!(arcsOccupes, arc)
+                        end
+                    end
+                    tempsRestantMotrices[m] = duree - 1
+                end
+            end
+        end
+
+        ## AFFECTATIONS
+        capaciteRestante = Dict(m => capacite for m in keys(prob.motrices))
+        for w in keys(prob.wagons)
+            aff = affectations[w]
+            aff[t] = aff[t-1]
+            arcWagon = trajetWagons[w][t-1]
+
+            if arcWagon[1] == arcWagon[2] && rand() < 0.5
+                candidats = [m for m in keys(prob.motrices)
+                    if trajetMotrices[m][t] == (arcWagon[2], arcWagon[2]) &&
+                       capaciteRestante[m] > 0]
+                if !isempty(candidats)
+                    aff[t] = rand(candidats)
+                    capaciteRestante[aff[t]] -= 1
+                else
+                    aff[t] = 0
+                end
+            end
+        end
+
+        ## WAGONS
+        for w in keys(prob.wagons)
+            m = affectations[w][t]
+            if m > 0
+                trajetWagons[w][t] = trajetMotrices[m][t]
+            else
+                trajetWagons[w][t] = trajetWagons[w][t-1]
+            end
+        end
+    end
+
+    return Plan(trajetMotrices, trajetWagons, affectations)
 end
 
 function verifierPlan(prob::Probleme, plan::Plan)::Bool
-    #=
+    """
     Retourne true si le plan est admissible pour le problème passé en argument.
-    =#
+    """
     horizonTemp = prob.horizonTemp
 
 
@@ -187,11 +490,11 @@ function verifierPlan(prob::Probleme, plan::Plan)::Bool
 end
 
 function evaluerPlan(prob::Probleme, sol::Plan)::Int
-    #=
+    """
     Calcule la valeur de la fonction objectif pour le plan passé en argument.
     TODO: ajouter une variante permettant de considérer t comme un délai maximum et non un horaire prévisionnel.
     TODO: faire en sorte d'évaluer moins sévèrement les solutions qui ne déplacent pas tous les wagons (comment les évaluer alors ?)
-    =#
+    """
     horizonTemp = prob.horizonTemp
     planningTheorique = prob.planning
 
@@ -241,212 +544,6 @@ function evaluerPlan(prob::Probleme, sol::Plan)::Int
     return obj
 end
 
-
-function genererPlanVierge(prob::Probleme)::Plan
-    T = prob.horizonTemp
-    C = prob.capacite
-    arcs = collect(keys(prob.arcs))
-
-    trajetMotrices = Dict{Int, Vector{Arc}}()
-    trajetWagons = Dict{Int, Vector{Arc}}()
-    affectations = Dict{Int, Vector{Int}}()
-
-    for (m, noeud) in prob.motrices
-        trajet = Vector{Arc}(undef, T)
-        for t in 1:T
-            trajet[t] = (noeud, noeud)  # boucle par défaut
-        end
-        trajetMotrices[m] = trajet
-    end
-
-    for (w, noeud) in prob.wagons
-        trajet = Vector{Arc}(undef, T)
-        aff = Vector{Int}(undef, T)
-        for t in 1:T
-            trajet[t] = (noeud, noeud)
-            aff[t] = 0
-        end
-        trajetWagons[w] = trajet
-        affectations[w] = aff
-    end
-
-    return Plan(trajetMotrices, trajetWagons, affectations)
-end
-
-
-function genererPlanAleatoire(prob::Probleme)::Plan
-    horizon = prob.horizonTemp
-    capacite = prob.capacite
-
-    trajetMotrices = Dict{Int, Vector{Arc}}()
-    tempsRestantMotrices = Dict{Int, Int}()
-    trajetWagons = Dict{Int, Vector{Arc}}()
-    affectations = Dict{Int, Vector{Int}}()
-
-    for (m, nd) in prob.motrices
-        trajetMotrices[m] = Vector{Arc}(undef, horizon)
-        trajetMotrices[m][1] = (nd, nd)
-        tempsRestantMotrices[m] = 0
-    end
-
-    for (w, nd) in prob.wagons
-        trajetWagons[w] = Vector{Arc}(undef, horizon)
-        trajetWagons[w][1] = (nd, nd)
-        affectations[w] = fill(0, horizon)
-    end
-
-    for t in 2:horizon
-        ## MOTRICES
-        arcsOccupes = Set{Arc}()
-
-        for m in sort(collect(keys(prob.motrices)))  # ordre fixe pour reproductibilité
-            prevArc = trajetMotrices[m][t-1]
-            if tempsRestantMotrices[m] > 0
-                trajetMotrices[m][t] = prevArc
-                tempsRestantMotrices[m] -= 1
-                if prevArc[1] != prevArc[2]
-                    push!(arcsOccupes, prevArc)
-                end
-            else
-                noeud = prevArc[2]
-                candidats = [a for a in keys(prob.arcs) if a[1] == noeud &&
-                    (a[1] == a[2] || !(a in arcsOccupes))]
-                if isempty(candidats)
-                    trajetMotrices[m][t] = (noeud, noeud)
-                    tempsRestantMotrices[m] = 0
-                else
-                    arc = rand(candidats)
-                    duree = prob.arcs[arc]
-                    for dt in 0:min(duree-1, horizon-t)
-                        trajetMotrices[m][t+dt] = arc
-                        if arc[1] != arc[2] && dt == 0
-                            push!(arcsOccupes, arc)
-                        end
-                    end
-                    tempsRestantMotrices[m] = duree - 1
-                end
-            end
-        end
-
-        ## AFFECTATIONS
-        capaciteRestante = Dict(m => capacite for m in keys(prob.motrices))
-        for w in keys(prob.wagons)
-            aff = affectations[w]
-            aff[t] = aff[t-1]
-            arcWagon = trajetWagons[w][t-1]
-
-            if arcWagon[1] == arcWagon[2] && rand() < 0.5
-                candidats = [m for m in keys(prob.motrices)
-                    if trajetMotrices[m][t] == (arcWagon[2], arcWagon[2]) &&
-                       capaciteRestante[m] > 0]
-                if !isempty(candidats)
-                    aff[t] = rand(candidats)
-                    capaciteRestante[aff[t]] -= 1
-                else
-                    aff[t] = 0
-                end
-            end
-        end
-
-        ## WAGONS
-        for w in keys(prob.wagons)
-            m = affectations[w][t]
-            if m > 0
-                trajetWagons[w][t] = trajetMotrices[m][t]
-            else
-                trajetWagons[w][t] = trajetWagons[w][t-1]
-            end
-        end
-    end
-
-    return Plan(trajetMotrices, trajetWagons, affectations)
-end
-
-
-function recuitSimule(prob::Probleme; Tmax=100.0, Tmin=1.0, alpha=0.95, iter=100)
-    planCourant = genererPlanAleatoire(prob)
-    while !verifierPlan(prob, planCourant)
-        planCourant = genererPlanAleatoire(prob)
-    end
-    coutCourant = evaluerPlan(prob, planCourant)
-    meilleurPlan, meilleurCout = planCourant, coutCourant
-    temp = Tmax
-
-    while temp > Tmin
-        for i in 1:iter
-            planVoisin = deepcopy(planCourant)
-            muterPlan!(planVoisin, prob)
-            if !verifierPlan(prob, planVoisin)
-                continue
-            end
-            coutVoisin = evaluerPlan(prob, planVoisin)
-            Δ = coutVoisin - coutCourant
-
-            if Δ < 0 || rand() < exp(-Δ / temp)
-                planCourant = planVoisin
-                coutCourant = coutVoisin
-                if coutVoisin < meilleurCout
-                    meilleurPlan, meilleurCout = deepcopy(planVoisin), coutVoisin
-                end
-            end
-        end
-        temp *= alpha
-        println(temp)
-    end
-
-    return meilleurPlan, meilleurCout
-end
-
-
-function muterPlan!(plan::Plan, prob::Probleme)
-    # TODO: corriger pour s'assurer que les mutations sont toutes valides. 
-    horizon = prob.horizonTemp
-    capacite = prob.capacite
-
-    # Choix aléatoire d’une motrice et d’un temps de mutation
-    m = rand(keys(plan.trajetMotrices))
-    t = rand(2:horizon-1)
-
-    # Si on est en milieu de parcours d’un arc long, on évite de couper
-    arcCourant = plan.trajetMotrices[m][t]
-    if arcCourant != plan.trajetMotrices[m][t-1]
-        return  # évite mutation partielle
-    end
-
-    noeudActuel = arcCourant[2]
-    candidats = [a for a in keys(prob.arcs) if a[1] == noeudActuel]
-
-    # Exclusion des arcs utilisés par d’autres motrices au même instant (sauf boucles)
-    for autre in keys(plan.trajetMotrices)
-        if autre == m; continue; end
-        if plan.trajetMotrices[autre][t] in candidats &&
-           plan.trajetMotrices[autre][t][1] != plan.trajetMotrices[autre][t][2]
-            deleteat!(candidats, findall(a -> a == plan.trajetMotrices[autre][t], candidats))
-        end
-    end
-
-    if isempty(candidats); return; end
-    newArc = rand(candidats)
-    duree = prob.arcs[newArc]
-
-    # Appliquer la mutation sur la motrice
-    for dt in 0:min(duree-1, horizon - t)
-        plan.trajetMotrices[m][t + dt] = newArc
-    end
-
-    # Recalculer les wagons affectés
-    for w in keys(plan.trajetWagons)
-        for dt in 0:min(duree-1, horizon - t)
-            t2 = t + dt
-            if plan.affectations[w][t2] == m
-                plan.trajetWagons[w][t2] = newArc
-            end
-        end
-    end
-end
-
-
-
 function afficherPlan(plan::Plan)
     println("Détails du Plan:")
     println("=================")
@@ -471,7 +568,30 @@ function afficherPlan(plan::Plan)
 end
 
 
+# --------------------------------------------
+# METAHEURISTIQUE
+# --------------------------------------------
+function genererSolution(prob::Probleme)::Solution
+    """
+    Génère une solution initiale aléatoirement.
+    """
 
+end
+
+function muterSolution(sol::Solution, prob::Probleme)::Solution
+    """
+    Apporte une mutation à la solution pour générer un nouveau plan.
+    Les mutations peuvent inclure l'ajout, la suppression, ou la modification d'une action, et sont choisies aléatoirement parmis les mutations disponibles à un instant donné.
+    """
+    # TODO. Choisir une position dans la solution
+end
+
+function evaluerSolution(sol::Solution, prob::Probleme)::Solution
+    """
+    Se base sur la fonction "evaluerPlan"
+    """
+    # TODO: revoir la fonction evaluerPlan
+end
 
 function main()
     # Construction d'un problème
@@ -486,8 +606,7 @@ function main()
     E[(3, 2)] = 1
     
     M = Dict{Int, Int}()
-    M[1] = 3
-    M[2] = 3
+    M[1] = 1
 
     W = Dict{Int, Int}()
     W[1] = 2
@@ -501,12 +620,13 @@ function main()
     prob = Probleme(V, E, M, W, P, C, T)
 
 
-    # Test d'implémentation de métaheuristiques
-    plan = genererPlanAleatoire(prob)
+    # Construction d'une solution
+    sol = Solution()
+    sol[1] = [Action(SeDeplacer, 2), Action(Affecter, 1), Action(Attendre, 2), Action(SeDeplacer, 3), Action(Deposer, 1)]
+    plan = construirePlan(prob, sol)
+    verifierPlan(prob, plan)
     afficherPlan(plan)
-    println("Admissibilité du plan: " * string(verifierPlan(prob, plan)))
 
-    meilleurPlan, meilleurCout = recuitSimule(prob)
     println("Fin de l'exécution...")
 end
 
