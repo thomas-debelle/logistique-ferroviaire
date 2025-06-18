@@ -1,0 +1,31 @@
+nbMissionsMax: 5
+dossierLogs: 'logs'
+nbLogsMax: 1
+
+graphe:
+  0:
+    1: 5
+    2: 2
+  1:
+    2: 1
+  2:
+    1: 3
+
+noeudsGare:
+  - 0
+  - 1
+  - 2
+
+requetes:
+  - [0, 0, 2, 0, 10]      # Envoyer le wagon 0 du noeud 0 au noeud 2 entre l'instant 0 et 10
+
+motrices:
+  0: 0
+  1: 2
+
+wagons:
+  0: 1
+  1: 2
+  2: 1
+  3: 1
+  4: 0
