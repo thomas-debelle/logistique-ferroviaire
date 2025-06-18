@@ -288,7 +288,14 @@ def resoudre_probleme(config: ConfigProbleme):
 
 
     def evaluer_solution(sol: Solution):
-        attelages = dict()          # Pour chaque wagon, série de motrices d'affectation indexée par le temps
+        attelages = dict()          # Pour chaque wagon, séquence des motrices d'affectation indexées par le temps
+
+        # Calcul de l'objectif de distance parcourue par les motrices
+
+        # Calcul de l'objectf de respect des requêtes
+        # On souhaite que les wagons passent au plus proche de leurs points de requêtes lors des instants requêtés
+        # A réfléchir
+
         pass        # TODO
 
     sol1 = generer_solution()
