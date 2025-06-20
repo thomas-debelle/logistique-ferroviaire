@@ -11,6 +11,8 @@ import os
 from math import floor
 import datetime
 from logging import info, warning, error
+import copy
+import sys
 
 def pause_and_exit():
     info("Appuyez sur une touche pour continuer...")
@@ -29,9 +31,9 @@ class ConfigProbleme:
         self.fichierLogs = None
         self.nbLogsMax = 10
 
-        self.graphe = None
+        self.graphe: Graph = None
         self.noeudGare = []
-        self.requetes = []
+        self.requetes = {}
         self.motrices = {}
         self.wagons = {}
 
@@ -40,13 +42,13 @@ class TypeMission(Enum):
     Deposer = 2
 
 class Mission:
-    def __init__(self, typeMission: TypeMission, param1: int, param2: int) -> None:
+    def __init__(self, typeMission: TypeMission, wagon: int, param: int) -> None:
         self.typeMission = typeMission
-        self.param1 = param1
-        self.param2 = param2
+        self.wagon = wagon
+        self.param = param
 
     def __str__(self) -> str:
-        return f"({self.typeMission}, {self.param1}, {self.param2})"
+        return f"({self.typeMission}, {self.wagon}, {self.param})"
 
     def __repr__(self) -> str:
         return str(self)
@@ -58,17 +60,16 @@ Chaque mission est un tuple (TypeMission, int, int), où les entiers sont des pa
 Solution = Dict[int, List[Mission]]
 
 class Requete:
-    def __init__(self, idWagon, depart, arrivee, tempsDebut, tempsFin) -> None:
+    """
+    Classe représentant une requête anonyme, qui doit être accomplie pour un wagon spécifié dans la config du problème.
+    """
+    def __init__(self, noeud, tempsDebut, tempsFin) -> None:
         """
-        idWagon: identifiant du wagon à transporter.
-        depart: noeud de départ.
-        arrivee: noeud d'arrivée.
-        tempsDebut: début de la fenêtre de temps durant laquelle la requête est valide. Le wagon doit se trouver au depart à tempsDebut.
-        tempsFin: fin de la fenêtre de temps durant laquelle la requête est valide. Le wagon doit se trouver à l'arrivée à tempsFin.
+        noeud: noeud cible de la requête.
+        tempsDebut: début de la fenêtre de temps durant laquelle la requête est valide.
+        tempsFin: fin de la fenêtre de temps durant laquelle la requête est valide. 
         """
-        self.idWagon = idWagon
-        self.depart = depart
-        self.arrivee = arrivee
+        self.noeud = noeud
         self.tempsDebut = tempsDebut
         self.tempsFin = tempsFin
 
@@ -141,7 +142,7 @@ def charger_config(cheminFichierConfig: str):
         g = Graph(directed=True)
         g.add_vertices(len(noeuds))
         g.add_edges(indexAretes)
-        g.es['weights'] = poids
+        g.es['weights'] = [int(p) for p in poids]       # Conversion des poids en entiers (les durées et instants sont des entiers naturels)
         g.vs['name'] = [str(n) for n in noeuds]
 
         return g
@@ -149,7 +150,7 @@ def charger_config(cheminFichierConfig: str):
 
     config = ConfigProbleme()
 
-    with open(cheminFichierConfig) as fichier:
+    with open(cheminFichierConfig, encoding='utf-8-sig') as fichier:
         try:
             donnees = yaml.safe_load(fichier)
         except yaml.YAMLError as exc:
@@ -172,7 +173,7 @@ def charger_config(cheminFichierConfig: str):
 
             # Lecture des requêtes
             if not (donnees['requetes'] is None):
-                config.requetes = [Requete(r[0], r[1], r[2], r[3], r[4]) for r in donnees['requetes']]
+                config.requetes = {w: Requete(r[0], r[1], r[2]) for w, r in donnees['requetes'].items()}
 
             # Lecture des motrices
             if not (donnees['motrices'] is None):
@@ -200,7 +201,7 @@ def resoudre_probleme(config: ConfigProbleme):
             sol[m] = []
             for i in range(random.randint(1, floor(config.nbMissionsMax / 2))):         # /2 car pour chaque récupération, une dépose est ajouée
                 wagon = random.choice(idWagons)
-                missionRecup = Mission(TypeMission.Recuperer, wagon, 0)                        # Ira récupérer le wagon sur n'importe quel noeud
+                missionRecup = Mission(TypeMission.Recuperer, wagon, -1)                        # Ira récupérer le wagon sur n'importe quel noeud
                 missionDepose = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudGare))
                 
                 # Insère les nouvelles missions tout en respectant la précédence
@@ -224,7 +225,7 @@ def resoudre_probleme(config: ConfigProbleme):
             sol[m].pop(pos)
         elif op == +1:
             wagon = random.choice(idWagons)
-            missionRecup = Mission(TypeMission.Recuperer, wagon, 0)
+            missionRecup = Mission(TypeMission.Recuperer, wagon, -1)
             missionDepose = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudGare))
 
             sol[m].insert(pos, missionDepose)
@@ -251,13 +252,13 @@ def resoudre_probleme(config: ConfigProbleme):
             posASupprimer = []
             for pos in range(len(sol[m])):
                 if sol[m][pos].typeMission == TypeMission.Recuperer:
-                    wagon = sol[m][pos].param1              # Si le wagon est déjà attelé, il ne peut pas être récupéré. Suppression de la mission.
+                    wagon = sol[m][pos].wagon              # Si le wagon est déjà attelé, il ne peut pas être récupéré. Suppression de la mission.
                     if wagon in wagonsAtteles:
                         posASupprimer.append(pos)
                     else:
                         wagonsAtteles.append(wagon)
                 elif sol[m][pos].typeMission == TypeMission.Deposer:
-                    wagon = sol[m][pos].param1
+                    wagon = sol[m][pos].wagon
                     if not (wagon in wagonsAtteles):        # Si le wagon n'est pas attelé, il ne peut pas être déposé. Suppression de la mission.
                         posASupprimer.append(pos)
                     else:
@@ -288,18 +289,92 @@ def resoudre_probleme(config: ConfigProbleme):
 
 
     def evaluer_solution(sol: Solution):
-        attelages = dict()          # Pour chaque wagon, séquence des motrices d'affectation indexées par le temps
+        # Variables pour la simulation de la solution
+        nbMissionsTotal = sum([len(l) for l in sol.values()])
+        positionsMotrices = copy.deepcopy(config.motrices)                      # Position des motrices à la fin de leur dernière mission. Par défaut, positions initiales dans le problème.
+        positionsWagonsCible = copy.deepcopy(config.wagons)                     # Noeud en direction duquel se déplace chaque wagon (prochaine position où le wagon est disponible pour l'attelage). Si le wagon ne se déplace pas, noeud actuel du wagon.
+        attelages = {m: set() for m in idMotrices}                              # Pour chaque motrice, collection des wagons attelés
+        indicesMissionsActuelles = {m: 0 for m in idMotrices}
+        
+        # Variable de temps
+        instantActuel = 0
+        dureeEcouleeMissionsActuelles = {m: 0 for m in idMotrices}              # Durée écoulée depuis que la mission actuelle est active (utilisée pour le calcul des instants)
+        
+        # Processus principal
+        # TODO: voir comment gérer les motrices déjà atteler (cibler le noeud de destination. 
+        # TODO: Actuellement, comme les positions des wagons ne sont mises à jours qu'à la fin des missions, les motrices ciblent le noeud d'origine: après que la motrice soit partie) 
+        nbMissionsEvalues = 0
+        while nbMissionsEvalues < nbMissionsTotal:
+            # TODO: vérifier l'algorithme avec un problème simple
+            # Recherche de la prochaine mission qui sera réalisée
+            tempsRestantMin = sys.maxsize
+            motriceProchaineMission = -1
+            arriveeProchaineMission = -1
+            prochaineMission = None
+            for m in idMotrices:
+                if indicesMissionsActuelles[m] > len(sol[m])-1:                 # Si la motrice m n'a plus de missions, pas de traitement
+                    continue
+                
+                # Extraction des informations pour le calcul d'itinéraire
+                i = indicesMissionsActuelles[m]
+                mission = sol[m][i]
+                depart = positionsMotrices[m]
+                if mission.typeMission == TypeMission.Recuperer:
+                    arrivee = positionsWagonsCible[mission.wagon]                     # Extraction de la position du wagon cible
+                elif mission.typeMission == TypeMission.Deposer:
+                    arrivee = mission.param
+                # TODO: vérifier comment le système se comporte avec deux actions Récupérer et deux actions Déposer consécutives (probablement aucun impact mais à vérifier)
 
-        # Calcul de l'objectif de distance parcourue par les motrices
+                # Calcul du temps de parcours jusqu'à l'arrivée
+                # TODO: éviter de recalculer la distance à chaque itération ? (en stockant les valeurs et en recalculant uniquement les wagons impactés par d'autres missions)
+                dureeParcours = int(config.graphe.distances(depart, arrivee, weights='weights')[0][0])      # Extraction de la meilleure distance jusqu'à l'arrivée       
+                tempsRestant = dureeParcours - dureeEcouleeMissionsActuelles[m]
+                if tempsRestant < tempsRestantMin:         # TODO: vérifier si la condition est logique
+                    tempsRestantMin = tempsRestant
+                    motriceProchaineMission = m
+                    arriveeProchaineMission = arrivee
+                    prochaineMission = mission
 
-        # Calcul de l'objectf de respect des requêtes
-        # On souhaite que les wagons passent au plus proche de leurs points de requêtes lors des instants requêtés
-        # A réfléchir
+            # Exécution de la prochaine mission et mise à jour des informations de simulation
+            positionsMotrices[motriceProchaineMission] = arriveeProchaineMission            # Mise à jour de la position de la motrice
+            for w in attelages[motriceProchaineMission]:
+                positionsWagonsCible[w] = arrivee                                           # Mise à jour de la position des wagons TODO: mettre à jour avec la position cible de la prochaine mission concernant ce wagon pour cette motrice
+            if prochaineMission.typeMission == TypeMission.Recuperer:                       # Mise à jour de l'attelage
+                attelages[motriceProchaineMission].add(prochaineMission.wagon)       
+            elif prochaineMission.typeMission == TypeMission.Deposer:
+                try:
+                    attelages[motriceProchaineMission].remove(prochaineMission.wagon)
+                except KeyError:
+                    pass        # Evite les erreurs lorsque le wagon n'est pas dans la liste des attelages
+            indicesMissionsActuelles[motriceProchaineMission] += 1
 
-        pass        # TODO
+            # Mise à jour des durées    TODO: pour les durées à ajouter, traiter les durées négatives (modélisation par une attente à destination)
+            dureeAAjouter = tempsRestantMin - dureeEcouleeMissionsActuelles[motriceProchaineMission]       # Durée écoulée depuis l'exécution de la dernière mission
+            instantActuel += dureeAAjouter
+            for m in idMotrices:
+                if m == motriceProchaineMission:
+                    dureeEcouleeMissionsActuelles[m] = 0                    # Réinitialisation des durées écoulées pour la motrice venant de terminer sa mission
+                else:
+                    dureeEcouleeMissionsActuelles[m] += dureeAAjouter       # Incrémentation des durées écoulées pour les autres motrices
+
+            # Evaluation de la mission au regard des requêtes. Chercher si la mission permet de valider une requête spécifique du wagon concerné.
+            # TODO
+
+            # Actualisation de la boucle
+            nbMissionsEvalues += 1
+
+
+
+        # TODO: Calcul de l'objectif de distance parcourue par les motrices
+
+        pass
 
     sol1 = generer_solution()
     sol2 = generer_solution()
+
+    evaluer_solution(sol1)
+    evaluer_solution(sol2)
+
     for i in range(50):
         sol1 = muter_solution(sol1)
         sol2 = muter_solution(sol2)

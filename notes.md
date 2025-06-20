@@ -1,20 +1,24 @@
 ## TODO
-- NOUVEAU SYSTEME DE SOLUTIONS:
-    - Deux actions: R(w) et D(w, n). Une mutation est soit l'ajout d'une mission R+D, soit l'inversion de deux missions (en s'assurant que cela respecte la précédance).
-    - Tant qu'une motrice ne peux pas accomplir sa mission, elle reste en attente à destination (par exemple, si le wagon à récupérer n'est pas encore arrivé).
-    - Pour les actions R(w), la motrice cherche le prochain noeud sur lequel elle pourra récupérer le wagon w. Pour cela, il est nécessaire d'évaluer tous les déplacements de ce wagon, et les distances pour atteindre ses noeuds successifs de changement d'attelage.
-    - Construire une fonction d'évaluation qui encourage le rapprochement du wagon de sa destination dans les temps.
-    - Intégrer également dans l'objectif l'idée de minimiser le trajet parcouru par l'ensemble des motrices sur le réseau.
-    - Pour les graphes: comment traiter les coûts et temps de parcours ?
-    - La plupart de la complexité est reportée sur l'évaluation: la correspondance des mouvements aux requêtes y est évaluée.
-
+- Faire toutes les vérifications dans l'évaluation des solutiosn
 - Ajouter des vérif sur les noeuds gare par rapport aux requêtes.
 
+
+## Moyen terme
 - Considérer le fait que l'attelage de wagon est LIFO ?
 - Créer le code permettant de générer des instances du problème à partir du réseau SNCF.
 - Évaluer la complexité numérique du MILP. Donner le nombre de contraintes générées en fonction des différents paramètres du modèle : horizon temporel, taille du réseau, nombre de motrice, taille du planning...
 - Parcourir les commentaire dans le rapport.
 - Parcourir le cours "Recherche Opérationnelle 3" pour voir s'il n'y a pas des éléments intéressants à intégrer dans le rapport (relaxation linéaire ?).
+
+
+## Nouveau système de solution:
+- Système avec seulement deux types de missions: R(w) et D(w, n)
+- Tant qu'une motrice ne peux pas accomplir sa mission, elle reste en attente à destination (par exemple, si le wagon à récupérer n'est pas encore arrivé).
+- Pour les actions R(w), la motrice cherche le prochain noeud sur lequel elle pourra récupérer le wagon w. Pour cela, il est nécessaire d'évaluer tous les déplacements de ce wagon, et les distances pour atteindre ses noeuds successifs de changement d'attelage.
+- Construire une fonction d'évaluation qui encourage le rapprochement du wagon de sa destination dans les temps.
+- Intégrer également dans l'objectif l'idée de minimiser le trajet parcouru par l'ensemble des motrices sur le réseau.
+- Pour les graphes: comment traiter les coûts et temps de parcours ?
+- La plupart de la complexité est reportée sur l'évaluation: la correspondance des mouvements aux requêtes y est évaluée.
 
 
 ## Autres ressources
