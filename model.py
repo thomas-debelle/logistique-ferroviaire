@@ -292,6 +292,7 @@ def resoudre_probleme(config: ConfigProbleme):
         # Variables pour la simulation de la solution
         nbMissionsTotal = sum([len(l) for l in sol.values()])
         positionsMotrices = copy.deepcopy(config.motrices)                      # Position des motrices à la fin de leur dernière mission. Par défaut, positions initiales dans le problème.
+        positionsWagons = copy.deepcopy(config.wagons)                          # Noeud actuel du wagon. Si le wagon se déplace, dernier noeud de passage du wagon.
         positionsCiblesWagons = copy.deepcopy(config.wagons)                    # Noeuds en direction desquels se déplacent les wagons (prochaine position où le wagon est disponible pour l'attelage). Si le wagon ne se déplace pas, noeud actuel du wagon.
         attelages = {m: set() for m in idMotrices}                              # Pour chaque motrice, collection des wagons attelés
         indicesMissionsActuelles = {m: 0 for m in idMotrices}
@@ -302,11 +303,9 @@ def resoudre_probleme(config: ConfigProbleme):
         dureeEcouleeMissionsActuelles = {m: 0 for m in idMotrices}              # Durée écoulée depuis que la mission actuelle est active (utilisée pour le calcul des instants)
         
         # Processus principal. Mission actuelle=dernière mission validée. Prochaine mission=prochaine mission validée.
-        # TODO: vérifier l'algorithme avec un problème simple. Vérifier notamment la gestion des attelages.
-        # TODO: voir comment gérer les wagons déjà attelés (cibler le noeud de destination).
-        # TODO: vérifier comment le système se comporte avec deux actions Récupérer et deux actions Déposer consécutives (probablement aucun impact mais à vérifier)
-        # TODO: vérifier comment le système se comporte si une autre motrice arrive à la prochaine position d'un wagon avant l'arrivée de sa motrice d'attelage.
+        # TODO: vérifier comment le système se comporte avec deux actions Récupérer ou deux actions Déposer consécutives (probablement aucun impact mais à vérifier)
         # TODO: éviter de recalculer la distance à chaque itération ? (en stockant les valeurs et en recalculant uniquement les wagons impactés par d'autres missions)
+        # TODO: organiser et optimiser le code.
         nbMissionsEvalues = 0
         while nbMissionsEvalues < nbMissionsTotal:
             # Recherche de la prochaine mission qui sera réalisée
@@ -315,7 +314,7 @@ def resoudre_probleme(config: ConfigProbleme):
             arriveeProchaineMission = -1
             prochaineMission = None
             for m in idMotrices:
-                if (indicesMissionsActuelles[m] > len(sol[m])-1 
+                if (indicesMissionsActuelles[m] >= len(sol[m]) 
                     or m in motricesEnAttente):                                         # Si la motrice m n'a plus de missions ou est en attente, pas de traitement
                     continue
                 
@@ -338,37 +337,38 @@ def resoudre_probleme(config: ConfigProbleme):
                 tempsRestant = dureeParcours - dureeEcouleeMissionsActuelles[m]
 
                 # Recherche de la prochaine mission exécutée chronologiquement pour l'ensemble des motrices
-                if tempsRestant < tempsRestantMin:         # TODO: vérifier si la condition est logique
+                if tempsRestant < tempsRestantMin:
                     tempsRestantMin = tempsRestant
                     motriceProchaineMission = m
                     arriveeProchaineMission = arrivee
                     prochaineMission = mission
 
-            # Exécution de la prochaine mission et mise à jour de l'attelage
+            # Mise à jour des positions pour la prochaine mission
             missionConfirmee = True
             positionsMotrices[motriceProchaineMission] = arriveeProchaineMission            # Mise à jour de la position de la motrice
-            if prochaineMission.typeMission == TypeMission.Recuperer:                       # Mise à jour de l'attelage. Remarque: les positions des wagons attelés sont mises à jour en continu lors du calcul des missions.
-                wagonDejaAttele = False
-                for m in idMotrices:                                                        # Vérifie que le wagon est disponible pour attelage, ou s'il va l'être. Sinon, placement de la motrice en attente. 
-                    wagonDejaAttele = wagonDejaAttele | (motriceProchaineMission in attelages[m])                        # Si le wagon est attelé à au moins une motrice, wagonDejaAttele passe à True.
-                
-                if wagonDejaAttele:
-                    motricesEnAttente.add(motriceProchaineMission)
+            for w in attelages[motriceProchaineMission]:
+                positionsWagons[w] = arriveeProchaineMission
+
+            # Confirmation de la mission et mise à jour de l'attelage
+            if prochaineMission.typeMission == TypeMission.Recuperer:                       # Attelage du wagon s'il n'est pas bloqué                   
+                wagonBloque = any(prochaineMission.wagon in attelages[m] and m != motriceProchaineMission for m in idMotrices)      # Vérifie que le wagon est disponible pour attelage, ou s'il va l'être. Sinon, placement de la motrice en attente. 
+                if wagonBloque:
+                    motricesEnAttente.add(motriceProchaineMission)                          # Blocage de la motrice jusqu'à évolution de la situation du réseau.
                     missionConfirmee = False
                 else:
                     attelages[motriceProchaineMission].add(prochaineMission.wagon)
-            elif prochaineMission.typeMission == TypeMission.Deposer:
+            elif prochaineMission.typeMission == TypeMission.Deposer:                       # Suppression de l'attelage
                 try:
                     attelages[motriceProchaineMission].remove(prochaineMission.wagon)
                 except KeyError:
                     pass        # Evite les erreurs lorsque le wagon n'est pas dans la liste des attelages
 
-            # Validation de la mission et déblocage des motrices en attente
+            # Passage à la prochaine mission et déblocage des motrices en attente
             if missionConfirmee:
                 indicesMissionsActuelles[motriceProchaineMission] += 1
                 motricesEnAttente.clear()
 
-            # Mise à jour des durées    TODO: traiter les durées négatives (peuvent apparaître dans le cas de missions se terminant en même temps)
+            # Mise à jour des durées. Dans le cas de missions se terminant en même temps ou de motrices en attente qui viennent d'être débloquées, la durée à ajouter peut être à 0.
             dureeAAjouter = tempsRestantMin - dureeEcouleeMissionsActuelles[motriceProchaineMission]       # Durée écoulée depuis l'exécution de la dernière mission
             instantActuel += dureeAAjouter
             for m in idMotrices:
@@ -377,16 +377,17 @@ def resoudre_probleme(config: ConfigProbleme):
                 else:
                     dureeEcouleeMissionsActuelles[m] += dureeAAjouter       # Incrémentation des durées écoulées pour les autres motrices
 
-            # Evaluation de la mission au regard des requêtes. Chercher si la mission permet de valider une requête spécifique du wagon concerné.
-            # TODO: nécessite de gérer la position actuelle des wagons en plus de leur position cible
+            # Evaluation des requêtes. Cherche si la mission permet de valider une requête du wagon déplacé
+            if prochaineMission.typeMission == TypeMission.Deposer:
+                wagonEvalue = prochaineMission.wagon
+                for requete in config.requetes[wagonEvalue]:
+                    if positionsWagons[wagonEvalue] == requete.noeud:
+                        pass            # TODO: réfléchir à la condition. Pour chaque requête, chercher l'instant le plus proche de la fenêtre de temps.
 
             # Actualisation de la boucle
             nbMissionsEvalues += 1
 
-
-
         # TODO: Calcul de l'objectif de distance parcourue par les motrices
-
         pass
 
     sol1 = generer_solution()
