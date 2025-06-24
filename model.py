@@ -37,18 +37,26 @@ class ConfigProbleme:
         self.motrices = {}
         self.wagons = {}
 
+        # Constantes
+        self.horizonTemporel = 500
+        self.baseScoreRequetes = 10
+        self.coeffPenaliteRetard = 1.0
+
 class TypeMission(Enum):
     Recuperer = 1
     Deposer = 2
 
 class Mission:
-    def __init__(self, typeMission: TypeMission, wagon: int, param: int) -> None:
+    def __init__(self, typeMission: TypeMission, wagon: int, noeud: int) -> None:
+        """
+        Pour certaine missions (par exemple celles de type "Récupérer") le paramètre de noeud n'est pas nécessaire et est déterminé automatiquement dans l'algorithme.
+        """
         self.typeMission = typeMission
         self.wagon = wagon
-        self.param = param
+        self.noeud = noeud
 
     def __str__(self) -> str:
-        return f"({self.typeMission}, {self.wagon}, {self.param})"
+        return f"({self.typeMission}, {self.wagon}, {self.noeud})"
 
     def __repr__(self) -> str:
         return str(self)
@@ -63,15 +71,20 @@ class Requete:
     """
     Classe représentant une requête anonyme, qui doit être accomplie pour un wagon spécifié dans la config du problème.
     """
-    def __init__(self, noeud, tempsDebut, tempsFin) -> None:
+    def __init__(self, noeud, dureeTransbordement, tempsDebut, tempsFin) -> None:
         """
         noeud: noeud cible de la requête.
+        dureeTransbordement: temps d'attente du wagon au noeud cible.
         tempsDebut: début de la fenêtre de temps durant laquelle la requête est valide.
         tempsFin: fin de la fenêtre de temps durant laquelle la requête est valide. 
         """
         self.noeud = noeud
+        self.dureeTransbordement = dureeTransbordement
         self.tempsDebut = tempsDebut
         self.tempsFin = tempsFin
+
+    def __repr__(self):
+        return '(' + str(self.noeud) + ', ' + str(self.dureeTransbordement) + ', ' + str(self.tempsDebut) + ', ' + str(self.tempsFin) + ')' 
 
 
 
@@ -173,7 +186,11 @@ def charger_config(cheminFichierConfig: str):
 
             # Lecture des requêtes
             if not (donnees['requetes'] is None):
-                config.requetes = {w: Requete(r[0], r[1], r[2]) for w, r in donnees['requetes'].items()}
+                config.requetes = {
+                    w: [Requete(*r) for r in listeRequetes]
+                    for w, listeRequetes in donnees['requetes'].items()
+                }
+
 
             # Lecture des motrices
             if not (donnees['motrices'] is None):
@@ -287,108 +304,105 @@ def resoudre_probleme(config: ConfigProbleme):
 
         return reparer_solution(enfant1), reparer_solution(enfant2)
 
-
     def evaluer_solution(sol: Solution):
-        # Variables pour la simulation de la solution
-        nbMissionsTotal = sum([len(l) for l in sol.values()])
-        positionsMotrices = copy.deepcopy(config.motrices)                      # Position des motrices à la fin de leur dernière mission. Par défaut, positions initiales dans le problème.
-        positionsWagons = copy.deepcopy(config.wagons)                          # Noeud actuel du wagon. Si le wagon se déplace, dernier noeud de passage du wagon.
-        positionsCiblesWagons = copy.deepcopy(config.wagons)                    # Noeuds en direction desquels se déplacent les wagons (prochaine position où le wagon est disponible pour l'attelage). Si le wagon ne se déplace pas, noeud actuel du wagon.
-        attelages = {m: set() for m in idMotrices}                              # Pour chaque motrice, collection des wagons attelés
-        indicesMissionsActuelles = {m: 0 for m in idMotrices}
-        motricesEnAttente = set()                                               # Collections des motrices en attente. Ces motrices sont bloquées à leur position actuelle jusqu'à la fin de la prochaine mission de l'ensemble des motrices. Ce comportement permet de gérer les motrices arrivant en avance à une position pour récupérer un wagon.
+        # Variable de simulation
+        dernierNoeudMotrices = copy.deepcopy(config.motrices)
+        dernierNoeudWagons = copy.deepcopy(config.wagons)
+        prochainNoeudMotrices = copy.deepcopy(config.motrices)
+        prochainNoeudWagons = copy.deepcopy(config.wagons)
+        attelages = {w: -1 for w in idWagons}                                       # Associe une motrice (valeur) à chaque wagon (clé). Si l'attelage est <0, alors le wagon n'est attelé à aucune motrice.
+        debutsTransbordements = {w: -1 for w in idWagons}                           # Instant de début du dernier transbordement de chaque wagon. Si la valeur est à -1, cela signifie qu'aucun transbordement n'est en cours.
 
-        # Variable de temps
-        instantActuel = 0
-        dureeEcouleeMissionsActuelles = {m: 0 for m in idMotrices}              # Durée écoulée depuis que la mission actuelle est active (utilisée pour le calcul des instants)
+        # Variable de gestion des requêtes et des missions
+        indicesMissionsActuelles = {m: 0 for m in idMotrices}                       # Indices des missions actuellement évaluées
+        indicesRequetesActuelles = {w: 0 for w in idWagons}                       # Indices des requêtes actuellement évaluées
+        debutsMissionsActuelles = {m: 0 for m in idMotrices}                        # Instant de début des missions actuellement simulées
         
-        # Processus principal. Mission actuelle=dernière mission validée. Prochaine mission=prochaine mission validée.
-        # TODO: vérifier comment le système se comporte avec deux actions Récupérer ou deux actions Déposer consécutives (probablement aucun impact mais à vérifier)
-        # TODO: éviter de recalculer la distance à chaque itération ? (en stockant les valeurs et en recalculant uniquement les wagons impactés par d'autres missions)
-        # TODO: organiser et optimiser le code.
+        # Boucle principale: simulation de la solution instant par instant
+        t = 0
+        scoreRequetes = 0.0                                                         # Le score est incrémenté pour chaque requête validé. On cherche à le maximiser.
+        nbMissionsTotal = sum([len(l) for l in sol.values()])                       # Tant que toutes les missions n'ont pas été évaluées
         nbMissionsEvalues = 0
         while nbMissionsEvalues < nbMissionsTotal:
-            # Recherche de la prochaine mission qui sera réalisée
-            tempsRestantMin = sys.maxsize
-            motriceProchaineMission = -1
-            arriveeProchaineMission = -1
-            prochaineMission = None
+            # ---------------------------------------------------------
+            # Mise à jour des motrices et missions
+            # ---------------------------------------------------------
             for m in idMotrices:
-                if (indicesMissionsActuelles[m] >= len(sol[m]) 
-                    or m in motricesEnAttente):                                         # Si la motrice m n'a plus de missions ou est en attente, pas de traitement
+                if indicesMissionsActuelles[m] >= len(sol[m]):
                     continue
+
+                # Extraction des informations liées à la motrice
+                missionActuelle = sol[m][indicesMissionsActuelles[m]]
+                depart = dernierNoeudMotrices[m]
+                arrivee = prochainNoeudWagons[missionActuelle.wagon] if missionActuelle.typeMission == TypeMission.Recuperer else missionActuelle.noeud     # Pour une mission de type "Récupérer": la motrice se dirige au même emplacement que son wagon cible
+                wagonsAtteles = [w for w in attelages.keys() if attelages[w] == m]
+
+                # Mise à jour des prochaines positions de la motrice et de ses attelages    # TODO: ne pas faire à chaque itération, seulement au début et au changement de mission. Permet aussi de ne pas recalculer l'arrivée à chaque itération
+                prochainNoeudMotrices[m] = arrivee
+                for w in wagonsAtteles:            # Extraction des wagons attelés à la motrice
+                    prochainNoeudWagons[w] = arrivee
+
+                # Calcul du temps de parcours restant jusqu'à l'arrivée
+                tempsParcours = int(config.graphe.distances(depart, arrivee, weights='weights')[0][0])
+                tempsRestant = tempsParcours - (t - debutsMissionsActuelles[m])
+
+
+                # Lorsque la motrice atteint sa destination:
+                # On tente de réaliser l'action liée à la mission. Si ce n'est pas possible, la mission n'est pas immédiatement validée.
+                missionValidee = False
+                if tempsRestant > 0:    # TODO: interpréter et gérer les temps négatifs (pas forcément de modif nécessaire) (lorsqu'une motrice poursuit un wagon qui se déplace, et se rapproche du noeud d'origine de la motrice)
+                    continue            # Si la motrice n'est pas encore à destination (il reste du temps de déplacement) on ne réalise pas d'autre traitement
+
+                # Mise à jour des dernières positions de la motrice et de ses attelages
+                dernierNoeudMotrices[m] = arrivee
+                for w in wagonsAtteles:            # Extraction des wagons attelés à la motrice
+                    dernierNoeudWagons[w] = arrivee
+
+                # Mise à jour des attelages
+                wagonMission = missionActuelle.wagon
+                if missionActuelle.typeMission == TypeMission.Recuperer and attelages[wagonMission] < 0:       # Si le wagon n'est pas déjà attelé, la mission peut être validée
+                    attelages[wagonMission] = m
+                    missionValidee = True
+                elif missionActuelle.typeMission == TypeMission.Deposer and attelages[wagonMission] == m:
+                    attelages[wagonMission] = -1                    # Suppression de l'attelage
+                    missionValidee = True
+
+                # Si la mission a pu être validée, on passe à la suivante
+                if missionValidee:
+                    debutsMissionsActuelles[m] = t
+                    indicesMissionsActuelles[m] += 1
+                    nbMissionsEvalues += 1
+
+            # ---------------------------------------------------------
+            # Mise à jour des wagons et requêtes
+            # ---------------------------------------------------------
+            for w in idWagons:
+                if indicesRequetesActuelles[w] >= len(config.requetes[w]):
+                    continue
+
+                # Si le wagon atteint la destination et n'est plus attelé, l'opération de transbordement peut commencer. Lorsque le transbordement est terminé, la requête est validée.
+                requete = config.requetes[w][indicesRequetesActuelles[w]]
+                if dernierNoeudWagons[w] != requete.noeud or attelages[w] > 0 or t < requete.tempsDebut:
+                    continue            # TODO: voir si besoin d'appliquer une pénalité d'avance (dans ce cas, nécessite de modéliser l'encombrement maximal à chaque noeud)
+                    
+                # Application éventuelle d'une pénalité de retard
+                if t > requete.tempsFin:
+                    pass
+
+                # Début du transbordement
+                if debutsTransbordements[w] < 0:
+                    debutsTransbordements[w] = t
                 
-                # Extraction des informations pour le calcul d'itinéraire
-                i = indicesMissionsActuelles[m]
-                mission = sol[m][i]
-                depart = positionsMotrices[m]
-                if mission.typeMission == TypeMission.Recuperer:
-                    arrivee = positionsCiblesWagons[mission.wagon]                      # Extraction de la position du wagon cible
-                elif mission.typeMission == TypeMission.Deposer:
-                    arrivee = mission.param
-                
-                # Mise à jour des positions cibles des wagons à partir des attelages
-                for w in attelages[m]:
-                    positionsCiblesWagons[w] = arrivee
+                # Fin du transbordement et validation de la requête
+                if t - debutsTransbordements[w] >= requete.dureeTransbordement:
+                    penaliteRetard = max(debutsTransbordements[w] - requete.tempsFin, 0) * config.coeffPenaliteRetard
+                    scoreRequetes += max(config.baseScoreRequetes - penaliteRetard, 0)      # Fin de la requête et calcul du score, avec enregistrement éventuel d'une pénalité
+                    debutsTransbordements[w] = -1
+                    indicesRequetesActuelles[w] += 1
+                    
+            t += 1
+            pass        # TODO: terminer l'évaluation en intégrant un calcul des distances parcourues par les motrices. A faire en parallèle du calcul des requêtes ?
 
-                # Calcul du temps de parcours jusqu'à l'arrivée
-                # TODO: gérer les cas où la destination n'est pas accessible (plutôt dans la réparation des solutions ? On pourrait admettre ici que toutes les missions sont réalisables)
-                dureeParcours = int(config.graphe.distances(depart, arrivee, weights='weights')[0][0])      # Extraction de la meilleure distance jusqu'à l'arrivée       
-                tempsRestant = dureeParcours - dureeEcouleeMissionsActuelles[m]
-
-                # Recherche de la prochaine mission exécutée chronologiquement pour l'ensemble des motrices
-                if tempsRestant < tempsRestantMin:
-                    tempsRestantMin = tempsRestant
-                    motriceProchaineMission = m
-                    arriveeProchaineMission = arrivee
-                    prochaineMission = mission
-
-            # Mise à jour des positions pour la prochaine mission
-            missionConfirmee = True
-            positionsMotrices[motriceProchaineMission] = arriveeProchaineMission            # Mise à jour de la position de la motrice
-            for w in attelages[motriceProchaineMission]:
-                positionsWagons[w] = arriveeProchaineMission
-
-            # Confirmation de la mission et mise à jour de l'attelage
-            if prochaineMission.typeMission == TypeMission.Recuperer:                       # Attelage du wagon s'il n'est pas bloqué                   
-                wagonBloque = any(prochaineMission.wagon in attelages[m] and m != motriceProchaineMission for m in idMotrices)      # Vérifie que le wagon est disponible pour attelage, ou s'il va l'être. Sinon, placement de la motrice en attente. 
-                if wagonBloque:
-                    motricesEnAttente.add(motriceProchaineMission)                          # Blocage de la motrice jusqu'à évolution de la situation du réseau.
-                    missionConfirmee = False
-                else:
-                    attelages[motriceProchaineMission].add(prochaineMission.wagon)
-            elif prochaineMission.typeMission == TypeMission.Deposer:                       # Suppression de l'attelage
-                try:
-                    attelages[motriceProchaineMission].remove(prochaineMission.wagon)
-                except KeyError:
-                    pass        # Evite les erreurs lorsque le wagon n'est pas dans la liste des attelages
-
-            # Passage à la prochaine mission et déblocage des motrices en attente
-            if missionConfirmee:
-                indicesMissionsActuelles[motriceProchaineMission] += 1
-                motricesEnAttente.clear()
-
-            # Mise à jour des durées. Dans le cas de missions se terminant en même temps ou de motrices en attente qui viennent d'être débloquées, la durée à ajouter peut être à 0.
-            dureeAAjouter = tempsRestantMin - dureeEcouleeMissionsActuelles[motriceProchaineMission]       # Durée écoulée depuis l'exécution de la dernière mission
-            instantActuel += dureeAAjouter
-            for m in idMotrices:
-                if m == motriceProchaineMission:
-                    dureeEcouleeMissionsActuelles[m] = 0                    # Réinitialisation des durées écoulées pour la motrice venant de terminer sa mission
-                else:
-                    dureeEcouleeMissionsActuelles[m] += dureeAAjouter       # Incrémentation des durées écoulées pour les autres motrices
-
-            # Evaluation des requêtes. Cherche si la mission permet de valider une requête du wagon déplacé
-            if prochaineMission.typeMission == TypeMission.Deposer:
-                wagonEvalue = prochaineMission.wagon
-                for requete in config.requetes[wagonEvalue]:
-                    if positionsWagons[wagonEvalue] == requete.noeud:
-                        pass            # TODO: réfléchir à la condition. Pour chaque requête, chercher l'instant le plus proche de la fenêtre de temps.
-
-            # Actualisation de la boucle
-            nbMissionsEvalues += 1
-
-        # TODO: Calcul de l'objectif de distance parcourue par les motrices
-        pass
 
     sol1 = generer_solution()
     sol2 = generer_solution()

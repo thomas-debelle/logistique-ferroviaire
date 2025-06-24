@@ -1,6 +1,5 @@
 ## TODO
-- Faire toutes les vérifications dans l'évaluation des solutiosn
-- Ajouter des vérif sur les noeuds gare par rapport aux requêtes.
+- Créer des problèmes et des solutions de test pour valider le fonctionnement de l'évaluation.
 
 
 ## Moyen terme

@@ -18,7 +18,8 @@ noeudsGare:
   - 2
 
 requetes:
-  0: [2, 0, 10]      # Le wagon 0 doit atteindre le noeud 2 entre l'instant 0 et 10
+  0: 
+    - [2, 2, 0, 10]      # Le wagon 0 doit atteindre le noeud 2 et attendre 2 unités de temps entre l'instant 0 et 10
 
 motrices:
   0: 0
