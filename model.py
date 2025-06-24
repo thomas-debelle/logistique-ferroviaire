@@ -47,7 +47,7 @@ class TypeMission(Enum):
     Deposer = 2
 
 class Mission:
-    def __init__(self, typeMission: TypeMission, wagon: int, noeud: int) -> None:
+    def __init__(self, typeMission: TypeMission, wagon: int, noeud: int = -1) -> None:
         """
         Pour certaine missions (par exemple celles de type "Récupérer") le paramètre de noeud n'est pas nécessaire et est déterminé automatiquement dans l'algorithme.
         """
@@ -63,7 +63,6 @@ class Mission:
 
 """"
 Dictionnaire associant une séquence de missions à chaque identifiant de motrice. 
-Chaque mission est un tuple (TypeMission, int, int), où les entiers sont des paramètres pour la mission à effectuer (pas tous toujours nécessaires).
 """
 Solution = Dict[int, List[Mission]]
 
@@ -310,12 +309,14 @@ def resoudre_probleme(config: ConfigProbleme):
         dernierNoeudWagons = copy.deepcopy(config.wagons)
         prochainNoeudMotrices = copy.deepcopy(config.motrices)
         prochainNoeudWagons = copy.deepcopy(config.wagons)
+        
         attelages = {w: -1 for w in idWagons}                                       # Associe une motrice (valeur) à chaque wagon (clé). Si l'attelage est <0, alors le wagon n'est attelé à aucune motrice.
         debutsTransbordements = {w: -1 for w in idWagons}                           # Instant de début du dernier transbordement de chaque wagon. Si la valeur est à -1, cela signifie qu'aucun transbordement n'est en cours.
+        wagonsEnAttente = {w: False for w in idWagons}                              # La valeur associée à chaque wagon passe à True lorsqu'ils sont dans l'attente d'être transbordés.
 
         # Variable de gestion des requêtes et des missions
         indicesMissionsActuelles = {m: 0 for m in idMotrices}                       # Indices des missions actuellement évaluées
-        indicesRequetesActuelles = {w: 0 for w in idWagons}                       # Indices des requêtes actuellement évaluées
+        indicesRequetesActuelles = {w: 0 for w in idWagons}                         # Indices des requêtes actuellement évaluées
         debutsMissionsActuelles = {m: 0 for m in idMotrices}                        # Instant de début des missions actuellement simulées
         
         # Boucle principale: simulation de la solution instant par instant
@@ -323,7 +324,9 @@ def resoudre_probleme(config: ConfigProbleme):
         scoreRequetes = 0.0                                                         # Le score est incrémenté pour chaque requête validé. On cherche à le maximiser.
         nbMissionsTotal = sum([len(l) for l in sol.values()])                       # Tant que toutes les missions n'ont pas été évaluées
         nbMissionsEvalues = 0
-        while nbMissionsEvalues < nbMissionsTotal:
+        while (nbMissionsEvalues < nbMissionsTotal 
+               or any(wagonsEnAttente.values()) 
+               or any(trans != -1 for trans in debutsTransbordements.values())):
             # ---------------------------------------------------------
             # Mise à jour des motrices et missions
             # ---------------------------------------------------------
@@ -350,7 +353,7 @@ def resoudre_probleme(config: ConfigProbleme):
                 # Lorsque la motrice atteint sa destination:
                 # On tente de réaliser l'action liée à la mission. Si ce n'est pas possible, la mission n'est pas immédiatement validée.
                 missionValidee = False
-                if tempsRestant > 0:    # TODO: interpréter et gérer les temps négatifs (pas forcément de modif nécessaire) (lorsqu'une motrice poursuit un wagon qui se déplace, et se rapproche du noeud d'origine de la motrice)
+                if tempsRestant > 0:    # TODO: interpréter et gérer les temps négatifs (pas forcément de modif nécessaire) (lorsqu'une motrice poursuit un wagon qui se déplace, et se rapproche du noeud d'origine de la motrice OU lorsqu'une nouvelle mission ne nécessite pas de déplacement)
                     continue            # Si la motrice n'est pas encore à destination (il reste du temps de déplacement) on ne réalise pas d'autre traitement
 
                 # Mise à jour des dernières positions de la motrice et de ses attelages
@@ -380,17 +383,19 @@ def resoudre_probleme(config: ConfigProbleme):
                 if indicesRequetesActuelles[w] >= len(config.requetes[w]):
                     continue
 
-                # Si le wagon atteint la destination et n'est plus attelé, l'opération de transbordement peut commencer. Lorsque le transbordement est terminé, la requête est validée.
+                # Vérifie que le wagon soit arrivé à destination et ne soit plus attelé pour commencer le transbordement. Lorsque le transbordement est terminé, la requête est validée.
                 requete = config.requetes[w][indicesRequetesActuelles[w]]
-                if dernierNoeudWagons[w] != requete.noeud or attelages[w] > 0 or t < requete.tempsDebut:
+                if dernierNoeudWagons[w] != requete.noeud or attelages[w] > 0:
                     continue            # TODO: voir si besoin d'appliquer une pénalité d'avance (dans ce cas, nécessite de modéliser l'encombrement maximal à chaque noeud)
-                    
-                # Application éventuelle d'une pénalité de retard
-                if t > requete.tempsFin:
-                    pass
+
+                # Si le wagon est en avance, il est placé en attente de transbordement
+                if t < requete.tempsDebut:
+                    wagonsEnAttente[w] = True
+                    continue
 
                 # Début du transbordement
-                if debutsTransbordements[w] < 0:
+                if debutsTransbordements[w] < 0:            # Si le transbordement n'a pas commencé pour ce wagon
+                    wagonsEnAttente[w] = False
                     debutsTransbordements[w] = t
                 
                 # Fin du transbordement et validation de la requête
@@ -402,18 +407,14 @@ def resoudre_probleme(config: ConfigProbleme):
                     
             t += 1
             pass        # TODO: terminer l'évaluation en intégrant un calcul des distances parcourues par les motrices. A faire en parallèle du calcul des requêtes ?
+        pass
 
-
-    sol1 = generer_solution()
-    sol2 = generer_solution()
-
-    evaluer_solution(sol1)
-    evaluer_solution(sol2)
-
-    for i in range(50):
-        sol1 = muter_solution(sol1)
-        sol2 = muter_solution(sol2)
-        sol1, sol2 = croiser_solutions(sol1, sol2)
+    # TEST
+    sol1: Solution = {
+        0: [Mission(TypeMission.Recuperer, 0), Mission(TypeMission.Deposer, 0, 3)],
+        1: [Mission(TypeMission.Recuperer, 1), Mission(TypeMission.Deposer, 1, 4)]
+    }
+    score = evaluer_solution(sol1)
     pass
 
                 

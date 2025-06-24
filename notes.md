@@ -1,5 +1,8 @@
 ## TODO
 - Créer des problèmes et des solutions de test pour valider le fonctionnement de l'évaluation.
+- Introduire un temps d'affectation pour temporiser.
+- Ajouter des vérifications dans les réparations sur le fait que les cibles des missions de dépose sont des noeuds de gare. Vérifier aussi que les wagons sont initialement sur des noeuds de gare.
+- Vérifier la config (que les requêtes correspondent au problème, par exemple)
 
 
 ## Moyen terme
