@@ -318,10 +318,13 @@ def resoudre_probleme(config: ConfigProbleme):
         indicesMissionsActuelles = {m: 0 for m in idMotrices}                       # Indices des missions actuellement évaluées
         indicesRequetesActuelles = {w: 0 for w in idWagons}                         # Indices des requêtes actuellement évaluées
         debutsMissionsActuelles = {m: 0 for m in idMotrices}                        # Instant de début des missions actuellement simulées
+
+        # Objectifs
+        objRequetes = 0                                                             # Score obtenu en répondant à des requêtes (à maximiser)
+        objParcours = 0                                                             # Durée totale de parcours des motrices (à minimiser)
         
         # Boucle principale: simulation de la solution instant par instant
         t = 0
-        scoreRequetes = 0.0                                                         # Le score est incrémenté pour chaque requête validé. On cherche à le maximiser.
         nbMissionsTotal = sum([len(l) for l in sol.values()])                       # Tant que toutes les missions n'ont pas été évaluées
         nbMissionsEvalues = 0
         while (nbMissionsEvalues < nbMissionsTotal 
@@ -353,7 +356,7 @@ def resoudre_probleme(config: ConfigProbleme):
                 # Lorsque la motrice atteint sa destination:
                 # On tente de réaliser l'action liée à la mission. Si ce n'est pas possible, la mission n'est pas immédiatement validée.
                 missionValidee = False
-                if tempsRestant > 0:    # TODO: interpréter et gérer les temps négatifs (pas forcément de modif nécessaire) (lorsqu'une motrice poursuit un wagon qui se déplace, et se rapproche du noeud d'origine de la motrice OU lorsqu'une nouvelle mission ne nécessite pas de déplacement)
+                if tempsRestant > 0:    # TODO: interpréter et gérer les temps négatifs en créant une poursuite (pas forcément de modif nécessaire) (lorsqu'une motrice poursuit un wagon qui se déplace, et se rapproche du noeud d'origine de la motrice OU lorsqu'une nouvelle mission ne nécessite pas de déplacement)
                     continue            # Si la motrice n'est pas encore à destination (il reste du temps de déplacement) on ne réalise pas d'autre traitement
 
                 # Mise à jour des dernières positions de la motrice et de ses attelages
@@ -361,6 +364,9 @@ def resoudre_probleme(config: ConfigProbleme):
                 for w in wagonsAtteles:            # Extraction des wagons attelés à la motrice
                     dernierNoeudWagons[w] = arrivee
 
+                # Ajout du déplacement à l'objectif de parcours
+                objParcours += tempsParcours     # TODO: voir comment cela se comporte si le wagon cible est bloqué lorsque la motrice arrive à destination
+                
                 # Mise à jour des attelages
                 wagonMission = missionActuelle.wagon
                 if missionActuelle.typeMission == TypeMission.Recuperer and attelages[wagonMission] < 0:       # Si le wagon n'est pas déjà attelé, la mission peut être validée
@@ -368,9 +374,9 @@ def resoudre_probleme(config: ConfigProbleme):
                     missionValidee = True
                 elif missionActuelle.typeMission == TypeMission.Deposer and attelages[wagonMission] == m:
                     attelages[wagonMission] = -1                    # Suppression de l'attelage
-                    missionValidee = True
+                    missionValidee = True 
 
-                # Si la mission a pu être validée, on passe à la suivante
+                # Si la mission a pu être validée, passage à la suivante
                 if missionValidee:
                     debutsMissionsActuelles[m] = t
                     indicesMissionsActuelles[m] += 1
@@ -401,13 +407,12 @@ def resoudre_probleme(config: ConfigProbleme):
                 # Fin du transbordement et validation de la requête
                 if t - debutsTransbordements[w] >= requete.dureeTransbordement:
                     penaliteRetard = max(debutsTransbordements[w] - requete.tempsFin, 0) * config.coeffPenaliteRetard
-                    scoreRequetes += max(config.baseScoreRequetes - penaliteRetard, 0)      # Fin de la requête et calcul du score, avec enregistrement éventuel d'une pénalité
+                    objRequetes += max(config.baseScoreRequetes - penaliteRetard, 0)      # Fin de la requête et calcul du score, avec enregistrement éventuel d'une pénalité
                     debutsTransbordements[w] = -1
                     indicesRequetesActuelles[w] += 1
                     
             t += 1
-            pass        # TODO: terminer l'évaluation en intégrant un calcul des distances parcourues par les motrices. A faire en parallèle du calcul des requêtes ?
-        pass
+        return (objRequetes, objParcours)
 
     # TEST
     sol1: Solution = {
