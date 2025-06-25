@@ -1,5 +1,6 @@
 ## TODO
-- Ajouter tous les déplacements manquants dans la réparation des solutions de manière à répondre à toutes les requêtes. Adapter les opérateurs génétiques si nécessaire.
+- Tester après rétablissement de l'objectif de distance.
+- Changer les mutations pour seulement ajouter des mission de Récup ? (et les missions de Dépose sont ajoutées automatiquement à la réparation de la solution)
 - Introduire un temps d'affectation pour temporiser.
 - Ajouter des vérifications dans les réparations sur le fait que les cibles des missions de dépose sont des noeuds de gare. Vérifier aussi que les wagons sont initialement sur des noeuds de gare.
 - Vérifier la config (que les requêtes correspondent au problème, par exemple)

@@ -40,13 +40,13 @@ class ConfigProbleme:
         self.horizonTemporel = 500
 
         self.graphe: Graph = None
-        self.noeudGare = []
+        self.noeudsGare = []
         self.requetes = {}
         self.motrices = {}
         self.wagons = {}
 
         # Constantes
-        self.baseScoreRequetes = 10
+        self.baseScoreRequetes = 10            # Récompense maximale lors de la validation d'une requête dans les temps
         self.coeffPenaliteRetard = 1.0
 
 class TypeMission(Enum):
@@ -196,7 +196,7 @@ def charger_config(cheminFichierConfig: str):
 
             # Lecture des noeuds gare
             if not (donnees['noeudsGare'] is None):
-                config.noeudGare = [int(n) for n in donnees['noeudsGare']]
+                config.noeudsGare = [int(n) for n in donnees['noeudsGare']]
 
             # Lecture des requêtes
             if not (donnees['requetes'] is None):
@@ -255,7 +255,7 @@ def resoudre_probleme(config: ConfigProbleme):
             for i in range(random.randint(1, floor(config.nbMissionsMax / 2))):         # /2 car pour chaque récupération, une dépose est ajouée
                 wagon = random.choice(idWagons)
                 missionRecup = Mission(TypeMission.Recuperer, wagon, -1)                        # Ira récupérer le wagon sur n'importe quel noeud
-                missionDepose = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudGare))
+                missionDepose = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudsGare))
                 
                 # Insère les nouvelles missions tout en respectant la précédence
                 posRecup = random.randint(0, len(sol[m]))                   # Les bornes de randint sont inclues
@@ -266,41 +266,63 @@ def resoudre_probleme(config: ConfigProbleme):
         return sol_to_ind(sol)
     
     def reparer_solution(sol: Solution):
-        return sol
-    
-    def nettoyer_solution(sol: Solution):
-        """
-        Supprime les missions inutiles et ajoute les missions de dépose manquante à la solution.
-        """
+        # TODO: parcourir les requêtes et chercher dans les missions si la requête est résolue à un moment donné. Sinon, ajouter des missions.
+        # Si un wagon arrive trop tôt à sa cible, la requête est considérée comme résoluee (car le wagon sera alors mis en attente).
+        # On ne souhaite vérifier que la séquentialité des wagons. Les éléments temporels seront évalués ultérieurement
+
+
+        # Parcours des missions de chaque motrice
+        indicesRequetes = dict.fromkeys(idWagons, 0)            # Indices des requêtes à vérifier
         for m in idMotrices:
-            wagonsAtteles = []          # Statut d'attelage des wagons mis à jour à chaque mission de la motrice
+            wagonsAtteles = dict.fromkeys(idWagons, False)
             posASupprimer = []
             for pos in range(len(sol[m])):
-                if sol[m][pos].typeMission == TypeMission.Recuperer:
-                    wagon = sol[m][pos].wagon              # Si le wagon est déjà attelé, il ne peut pas être récupéré. Suppression de la mission.
-                    if wagon in wagonsAtteles:
-                        posASupprimer.append(pos)
-                    else:
-                        wagonsAtteles.append(wagon)
-                elif sol[m][pos].typeMission == TypeMission.Deposer:
-                    wagon = sol[m][pos].wagon
-                    if not (wagon in wagonsAtteles):        # Si le wagon n'est pas attelé, il ne peut pas être déposé. Suppression de la mission.
-                        posASupprimer.append(pos)
-                    else:
-                        wagonsAtteles.remove(wagon)
+                mission = sol[m][pos]
+                w = mission.wagon
 
-            # Suppression des missions relevées. Les positions à supprimer sont triées dans l'ordre croissant
+                # Vérification des missions redondantes
+                if mission.typeMission == TypeMission.Recuperer:
+                    if wagonsAtteles[w]:
+                        posASupprimer.append(pos)           # Si le wagon est déjà attelé, la mission est redondante
+                    else:
+                        wagonsAtteles[w] = True             # Sinon, on met à jour l'attelage
+                elif mission.typeMission == TypeMission.Deposer:
+                    if not wagonsAtteles[w]:
+                        posASupprimer.append(pos)           # Si le wagon n'est pas attelé, la mission est redondante
+                    else:
+                        wagonsAtteles[w] = False
+                        
+                        # Si le déplacement de la mission valide la requête, alors on évalue la requête suivante
+                        noeudMission = mission.noeud
+                        if indicesRequetes[w] < len(config.requetes[w]) and noeudMission == config.requetes[w][indicesRequetes[w]].noeud:
+                            indicesRequetes[w] += 1
+
+            # Ajout de missions de dépose pour les wagons encore attelés
+            for w, b in wagonsAtteles.items():
+                if not b:       # Si le wagon n'est pas attelé à cette motrice à la fin de la simulation, on passe au suivant
+                    continue
+                noeudDepose = random.choice(config.noeudsGare)
+                sol[m].append(Mission(TypeMission.Deposer, w, noeudDepose))
+                
+
+            # Suppression des missions redondantes avec gestion des décalages. Les positions sont triées dans l'ordre croissant.
             posSupprimees = 0               
             for p in posASupprimer:
                 sol[m].pop(p-posSupprimees)                 # Gestion des décalages d'indice lors de la suppression de missions
                 posSupprimees += 1
 
-            # Si la dernière position de la motrice est directement connue via la solution, ajout des missions de dépose manquantes
-            if len(sol[m]) > 0 and sol[m][-1].typeMission == TypeMission.Deposer:
-                dernierNoeud = sol[m][-1].noeud
-                for w in wagonsAtteles:
-                    sol[m].append(Mission(TypeMission.Deposer, w, dernierNoeud))
 
+        # Pour chaque requête non vérifiée, ajout de missions sur des motrices au hasard 
+        for w in idWagons:
+            while indicesRequetes[w] < len(config.requetes[w]):
+                requete = config.requetes[w][indicesRequetes[w]]
+                noeudRequete = requete.noeud
+                m = random.choice(idMotrices)
+
+                sol[m].append(Mission(TypeMission.Recuperer, w, -1))
+                sol[m].append(Mission(TypeMission.Deposer, w, noeudRequete))
+                indicesRequetes[w] += 1
+        
         return sol
     
     def muter_individu(ind):
@@ -319,7 +341,7 @@ def resoudre_probleme(config: ConfigProbleme):
         elif op == +1:
             wagon = random.choice(idWagons)
             missionRecup = Mission(TypeMission.Recuperer, wagon, -1)
-            missionDepose = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudGare))
+            missionDepose = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudsGare))
 
             sol[m].insert(pos, missionDepose)
             sol[m].insert(pos, missionRecup)        # Insertion de la dépose puis de la récup pour respecter l'ordre. Les missions sont directement consécutives.
@@ -368,6 +390,11 @@ def resoudre_probleme(config: ConfigProbleme):
         return evaluer_solution(ind_to_sol(ind))
     
     def evaluer_solution(sol: Solution):
+        """
+        Simule la solution instant par instant pour en calculer le score.
+        Les positions cibles des missions de Récupération sont déterminées dynamiquement à partir des positions des wagons.
+        Une solution est une séquence de missions imposées à chaque motrice. Si un wagon arrive trop tôt dans son noeud de destination, il est mis en attente.
+        """
         # Variable de simulation
         dernierNoeudMotrices = copy.deepcopy(config.motrices)
         dernierNoeudWagons = copy.deepcopy(config.wagons)
@@ -545,16 +572,7 @@ def resoudre_probleme(config: ConfigProbleme):
     meilleurInd = frontPareto[0]        # ATTENTION: certaines requêtes peuvent être remplies par la solution via le désattelage final, même sans action de dépose
     meilleureSol = ind_to_sol(meilleurInd)          # TODO: appliquer un nettoyage, et s'assurer que les scores après nettoyage restent les mêmes.    
     score = evaluer_solution(meilleureSol)
-    pass
-
-    """
-    # TEST
-    sol1: Solution = {
-        0: [Mission(TypeMission.Recuperer, 0), Mission(TypeMission.Deposer, 0, 3)],
-        1: [Mission(TypeMission.Recuperer, 0), Mission(TypeMission.Deposer, 0, 3)]
-    }
-    score = evaluer_solution(sol1)
-    """
+    pass        # TODO : compléter l'exécution
 
                 
 def main():
