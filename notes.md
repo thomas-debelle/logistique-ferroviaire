@@ -1,11 +1,15 @@
 ## TODO
-- Créer des problèmes et des solutions de test pour valider le fonctionnement de l'évaluation.
+- Ajouter tous les déplacements manquants dans la réparation des solutions de manière à répondre à toutes les requêtes. Adapter les opérateurs génétiques si nécessaire.
 - Introduire un temps d'affectation pour temporiser.
 - Ajouter des vérifications dans les réparations sur le fait que les cibles des missions de dépose sont des noeuds de gare. Vérifier aussi que les wagons sont initialement sur des noeuds de gare.
 - Vérifier la config (que les requêtes correspondent au problème, par exemple)
+- Introduire un critère de fin pour l'algorithme.
+- Configurer les poids des objectifs.
+- Afficher les solutions sous forme textuelle.
 
 
 ## Moyen terme
+- Ajouter des capacités max en terme de wagons et de motrices dans les gares.
 - Considérer le fait que l'attelage de wagon est LIFO ?
 - Créer le code permettant de générer des instances du problème à partir du réseau SNCF.
 - Évaluer la complexité numérique du MILP. Donner le nombre de contraintes générées en fonction des différents paramètres du modèle : horizon temporel, taille du réseau, nombre de motrice, taille du planning...

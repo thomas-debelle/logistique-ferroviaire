@@ -12,7 +12,8 @@ from math import floor
 import datetime
 from logging import info, warning, error
 import copy
-import sys
+from deap import base, creator, tools, algorithms
+import numpy as np
 
 def pause_and_exit():
     info("Appuyez sur une touche pour continuer...")
@@ -26,10 +27,17 @@ class ConfigProbleme:
         noeudsGare: liste des noeuds du graphe correspondant à des gares, où les trains peuvent s'arrêter et déposer des wagons.
         motrices: dictionnaire associant un noeud de départ à chaque identifiant de motrice.
         """
-        self.nbMissionsMax = 5
         self.dossierLogs = 'logs'
         self.fichierLogs = None
         self.nbLogsMax = 10
+
+        self.nbGenerations = 100
+        self.taillePopulation = 150
+        self.cxpb = 0.85
+        self.mutpb = 0.1
+        
+        self.nbMissionsMax = 5
+        self.horizonTemporel = 500
 
         self.graphe: Graph = None
         self.noeudGare = []
@@ -38,7 +46,6 @@ class ConfigProbleme:
         self.wagons = {}
 
         # Constantes
-        self.horizonTemporel = 500
         self.baseScoreRequetes = 10
         self.coeffPenaliteRetard = 1.0
 
@@ -171,9 +178,17 @@ def charger_config(cheminFichierConfig: str):
 
         try:
             # Lecture des données de base
-            config.nbMissionsMax = int(donnees['nbMissionsMax'])        # TODO: supprimer ça (ou alors, le renommer car uniquement utilisé à l'initialisation)
             config.dossierLogs = str(donnees['dossierLogs'])
             config.nbLogsMax = int(donnees['nbLogsMax'])
+
+            config.nbGenerations = int(donnees['nbGenerations'])
+            config.taillePopulation = int(donnees['taillePopulation'])
+            config.cxpb = float(donnees['cxpb'])
+            config.mutpb = float(donnees['mutpb'])
+
+            config.nbMissionsMax = int(donnees['nbMissionsMax'])        # TODO: renommer (car uniquement utilisé à la génération initiale de solutions)
+            config.horizonTemporel = int(donnees['horizonTemporel'])
+
 
             # Lecture du graphe
             dictGraphe = {int(k): {int(t): float(w) for t, w in v.items()} for k, v in donnees["graphe"].items()}
@@ -190,7 +205,6 @@ def charger_config(cheminFichierConfig: str):
                     for w, listeRequetes in donnees['requetes'].items()
                 }
 
-
             # Lecture des motrices
             if not (donnees['motrices'] is None):
                 config.motrices = dict(zip([int(k) for k in list(donnees['motrices'].keys())], [int(v) for v in list(donnees['motrices'].values())]))
@@ -198,6 +212,12 @@ def charger_config(cheminFichierConfig: str):
             # Lecture des wagons
             if not (donnees['wagons'] is None):
                 config.wagons = dict(zip([int(k) for k in list(donnees['wagons'].keys())], [int(v) for v in list(donnees['wagons'].values())]))
+
+            # Vérifications supplémentaires
+            # Vérifie que tous les wagons soient présents dans les requêtes
+            for w in config.wagons.keys():
+                if not w in config.requetes.keys():
+                    config.requetes[w] = []             # Initialisation des requêtes avec une liste vide
 
         except KeyError as exc:
             error(f"{exc.args[0]} est absent de la configuration.")
@@ -209,8 +229,25 @@ def charger_config(cheminFichierConfig: str):
 def resoudre_probleme(config: ConfigProbleme):
     idMotrices = list(config.motrices.keys())
     idWagons = list(config.wagons.keys())
+
+
+    def sol_to_ind(solution: Solution):
+        donneesInd = [mission for missions in solution.values() for mission in missions]
+        structure = [(motrice, len(missions)) for motrice, missions in solution.items()]
+
+        ind = creator.Individual(donneesInd)
+        ind.structure = structure                   # Pour reconstruire la solution ultérieurement
+        return ind
+
+    def ind_to_sol(ind):
+        solution = {}
+        i = 0
+        for motrice, length in ind.structure:
+            solution[motrice] = ind[i:i+length]
+            i += length
+        return solution
     
-    def generer_solution():
+    def generer_individu():
         sol: Solution = dict()
 
         for m in idMotrices:
@@ -226,42 +263,14 @@ def resoudre_probleme(config: ConfigProbleme):
                 posDepose = random.randint(posRecup+1, len(sol[m]))
                 sol[m].insert(posDepose, missionDepose)
 
+        return sol_to_ind(sol)
+    
+    def reparer_solution(sol: Solution):
         return sol
     
-    def muter_solution(sol: Solution):
+    def nettoyer_solution(sol: Solution):
         """
-        Mutation: ajout (+1), suppression (-1) ou déplacement (0) d'une mission dans la chronologie pour une motrice choisie au hasard.
-        La précédence n'est pas vérifiée à la mutation mais à la réparation: les missions inutiles (deux récup successives ou deux déposes successives) sont supprimées.
-        """
-        m = random.choice(idMotrices)
-        pos = random.randint(0, len(sol[m])-1) if len(sol[m]) > 0 else 0
-        op = random.choice([-1, 0, 1]) if len(sol[m]) > 0 else 1                # Sélection d'une opération (1 si la motrice n'a aucune mission)
-        
-        if op == -1:
-            sol[m].pop(pos)
-        elif op == +1:
-            wagon = random.choice(idWagons)
-            missionRecup = Mission(TypeMission.Recuperer, wagon, -1)
-            missionDepose = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudGare))
-
-            sol[m].insert(pos, missionDepose)
-            sol[m].insert(pos, missionRecup)        # Insertion de la dépose puis de la récup pour respecter l'ordre. Les missions sont directement consécutives.
-        else:   # op == 0
-            if len(sol[m]) > 1:
-                # Extraction de deux positions
-                autresPos = list(range(len(sol[m])))
-                autresPos.remove(pos)
-                pos1 = pos
-                pos2 = random.choice(autresPos)
-
-                # Echange des deux missions dans la chronologie
-                sol[m][pos1], sol[m][pos2] = sol[m][pos2], sol[m][pos1]
-
-        return reparer_solution(sol)
-    
-    def reparer_solution(sol: Solution) -> Solution:
-        """
-        Répare la solution en supprimant les missions inutiles.
+        Supprime les missions inutiles et ajoute les missions de dépose manquante à la solution.
         """
         for m in idMotrices:
             wagonsAtteles = []          # Statut d'attelage des wagons mis à jour à chaque mission de la motrice
@@ -286,23 +295,78 @@ def resoudre_probleme(config: ConfigProbleme):
                 sol[m].pop(p-posSupprimees)                 # Gestion des décalages d'indice lors de la suppression de missions
                 posSupprimees += 1
 
+            # Si la dernière position de la motrice est directement connue via la solution, ajout des missions de dépose manquantes
+            if len(sol[m]) > 0 and sol[m][-1].typeMission == TypeMission.Deposer:
+                dernierNoeud = sol[m][-1].noeud
+                for w in wagonsAtteles:
+                    sol[m].append(Mission(TypeMission.Deposer, w, dernierNoeud))
+
         return sol
     
-    def croiser_solutions(sol1: Solution, sol2: Solution) -> Solution:
+    def muter_individu(ind):
         """
-        Croisement par segments + réparation pour chaque motrice.
+        Mutation: ajout (+1), suppression (-1) ou déplacement (0) d'une mission dans la chronologie pour une motrice choisie au hasard.
+        La précédence n'est pas vérifiée à la mutation mais à la réparation: les missions inutiles (deux récup successives ou deux déposes successives) sont supprimées.
         """
+        sol = ind_to_sol(ind)
+
+        m = random.choice(idMotrices)
+        pos = random.randint(0, len(sol[m])-1) if len(sol[m]) > 0 else 0
+        op = random.choice([-1, 0, 1]) if len(sol[m]) > 0 else 1                # Sélection d'une opération (1 si la motrice n'a aucune mission)
+        
+        if op == -1:
+            sol[m].pop(pos)
+        elif op == +1:
+            wagon = random.choice(idWagons)
+            missionRecup = Mission(TypeMission.Recuperer, wagon, -1)
+            missionDepose = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudGare))
+
+            sol[m].insert(pos, missionDepose)
+            sol[m].insert(pos, missionRecup)        # Insertion de la dépose puis de la récup pour respecter l'ordre. Les missions sont directement consécutives.
+        else:   # op == 0
+            if len(sol[m]) > 1:
+                # Extraction de deux positions
+                autresPos = list(range(len(sol[m])))
+                autresPos.remove(pos)
+                pos1 = pos
+                pos2 = random.choice(autresPos)
+
+                # Echange des deux missions dans la chronologie
+                sol[m][pos1], sol[m][pos2] = sol[m][pos2], sol[m][pos1]
+
+        return sol_to_ind(reparer_solution(sol)),
+    
+    def croiser_individus(ind1, ind2):
+        """
+        Croisement par segments aléatoire + réparation pour chaque motrice.
+        """
+        sol1 = ind_to_sol(ind1)
+        sol2 = ind_to_sol(ind2)
+
         enfant1 = dict()
         enfant2 = dict()
-        for m in idMotrices:            # TODO: changer la manière de croiser les solutions (la sélection avec nbMin a tendance à réduire la taille des solutions)
-            nbMin = min([len(sol1), len(sol2)])
-            a, b = sorted(random.sample(range(nbMin), 2))
 
-            enfant1[m] = sol1[m][:a] + sol2[m][a:b] + sol1[m][b:]
-            enfant2[m] = sol2[m][:a] + sol1[m][a:b] + sol2[m][b:]
+        # Sélection d'un segment aléatoire dans chaque parent et échange
+        for m in idMotrices:
+            # Dans le cas où l'une des solution n'inclut qu'une mission, le croisement n'est pas possible
+            if len(sol1[m]) < 2 or len(sol2[m]) < 2:
+                enfant1[m] = sol1[m]
+                enfant2[m] = sol2[m]
+                continue
+            
+            # Sélection de deux segments pour chaque solution
+            a1, b1 = sorted(random.sample(range(len(sol1[m])), 2))
+            a2, b2 = sorted(random.sample(range(len(sol2[m])), 2))
 
-        return reparer_solution(enfant1), reparer_solution(enfant2)
+            # Echange des deux segments
+            enfant1[m] = sol1[m][:a1] + sol2[m][a2:b2] + sol1[m][b1:]
+            enfant2[m] = sol2[m][:a2] + sol1[m][a1:b1] + sol2[m][b2:]
 
+        return sol_to_ind(reparer_solution(enfant1)), sol_to_ind(reparer_solution(enfant2))
+
+    def evaluer_individu(ind):
+        return evaluer_solution(ind_to_sol(ind))
+    
     def evaluer_solution(sol: Solution):
         # Variable de simulation
         dernierNoeudMotrices = copy.deepcopy(config.motrices)
@@ -324,12 +388,15 @@ def resoudre_probleme(config: ConfigProbleme):
         objParcours = 0                                                             # Durée totale de parcours des motrices (à minimiser)
         
         # Boucle principale: simulation de la solution instant par instant
-        t = 0
+        t = -1      # Garantit que t=0 à la première itération
         nbMissionsTotal = sum([len(l) for l in sol.values()])                       # Tant que toutes les missions n'ont pas été évaluées
         nbMissionsEvalues = 0
-        while (nbMissionsEvalues < nbMissionsTotal 
+        while ((nbMissionsEvalues < nbMissionsTotal 
                or any(wagonsEnAttente.values()) 
-               or any(trans != -1 for trans in debutsTransbordements.values())):
+               or any(trans >= 0 for trans in debutsTransbordements.values()))
+               and t < config.horizonTemporel):         # L'horizon temporel permet d'éviter d'être bloqué indéfiniment dans la boucle (si deux motrices cherchent mutuellement à récupérer un wagon attelé à l'autre, par exemple)
+            t += 1
+
             # ---------------------------------------------------------
             # Mise à jour des motrices et missions
             # ---------------------------------------------------------
@@ -356,7 +423,7 @@ def resoudre_probleme(config: ConfigProbleme):
                 # Lorsque la motrice atteint sa destination:
                 # On tente de réaliser l'action liée à la mission. Si ce n'est pas possible, la mission n'est pas immédiatement validée.
                 missionValidee = False
-                if tempsRestant > 0:    # TODO: interpréter et gérer les temps négatifs en créant une poursuite (pas forcément de modif nécessaire) (lorsqu'une motrice poursuit un wagon qui se déplace, et se rapproche du noeud d'origine de la motrice OU lorsqu'une nouvelle mission ne nécessite pas de déplacement)
+                if tempsRestant > 0:    # Si tempsRestant < 0, cela signifie que la motrice est arrivée à destination avant t (cela devra être pris en compte s'il y a implémentation d'une trace plus tard).
                     continue            # Si la motrice n'est pas encore à destination (il reste du temps de déplacement) on ne réalise pas d'autre traitement
 
                 # Mise à jour des dernières positions de la motrice et de ses attelages
@@ -369,18 +436,24 @@ def resoudre_probleme(config: ConfigProbleme):
                 
                 # Mise à jour des attelages
                 wagonMission = missionActuelle.wagon
-                if missionActuelle.typeMission == TypeMission.Recuperer and attelages[wagonMission] < 0:       # Si le wagon n'est pas déjà attelé, la mission peut être validée
-                    attelages[wagonMission] = m
-                    missionValidee = True
-                elif missionActuelle.typeMission == TypeMission.Deposer and attelages[wagonMission] == m:
-                    attelages[wagonMission] = -1                    # Suppression de l'attelage
-                    missionValidee = True 
+                if (missionActuelle.typeMission == TypeMission.Recuperer):       # Si le wagon n'est pas attelé à une autre motrice ou est déjà attelé, la mission peut être validée
+                    wagonEstDisponible = attelages[wagonMission] < 0 and (not wagonsEnAttente[wagonMission]) and debutsTransbordements[wagonMission] < 0     # Vérifie que le wagon ne subit aucune opération
+                    if wagonEstDisponible or attelages[wagonMission] == m:
+                        attelages[wagonMission] = m
+                        missionValidee = True
+                elif missionActuelle.typeMission == TypeMission.Deposer:
+                    if attelages[wagonMission] == m:
+                        attelages[wagonMission] = -1                    # Suppression de l'attelage
+                    missionValidee = True                               # La mission est validée dans tous les cas (même si le wagon n'est pas attelé à la motrice)
 
                 # Si la mission a pu être validée, passage à la suivante
                 if missionValidee:
                     debutsMissionsActuelles[m] = t
                     indicesMissionsActuelles[m] += 1
                     nbMissionsEvalues += 1
+
+                    if indicesMissionsActuelles[m] >= len(sol[m]):      # Si la dernière mission de la motrice a été terminée, suppression de tous ses attelages.
+                        attelages = {k: (-1 if v == m else v) for k, v in attelages.items()}        # Remarque: cela est équivalent à une dépose des wagons sur la dernière position de la motrice.
 
             # ---------------------------------------------------------
             # Mise à jour des wagons et requêtes
@@ -391,17 +464,18 @@ def resoudre_probleme(config: ConfigProbleme):
 
                 # Vérifie que le wagon soit arrivé à destination et ne soit plus attelé pour commencer le transbordement. Lorsque le transbordement est terminé, la requête est validée.
                 requete = config.requetes[w][indicesRequetesActuelles[w]]
-                if dernierNoeudWagons[w] != requete.noeud or attelages[w] > 0:
-                    continue            # TODO: voir si besoin d'appliquer une pénalité d'avance (dans ce cas, nécessite de modéliser l'encombrement maximal à chaque noeud)
+                if dernierNoeudWagons[w] != requete.noeud or attelages[w] >= 0:
+                    continue
 
                 # Si le wagon est en avance, il est placé en attente de transbordement
                 if t < requete.tempsDebut:
                     wagonsEnAttente[w] = True
-                    continue
+                    continue                # TODO: voir si besoin d'appliquer une pénalité d'avance (dans ce cas, nécessite de modéliser l'encombrement maximal à chaque noeud)
+                else:
+                    wagonsEnAttente[w] = False              # Déblocage du wagon
 
                 # Début du transbordement
                 if debutsTransbordements[w] < 0:            # Si le transbordement n'a pas commencé pour ce wagon
-                    wagonsEnAttente[w] = False
                     debutsTransbordements[w] = t
                 
                 # Fin du transbordement et validation de la requête
@@ -410,17 +484,77 @@ def resoudre_probleme(config: ConfigProbleme):
                     objRequetes += max(config.baseScoreRequetes - penaliteRetard, 0)      # Fin de la requête et calcul du score, avec enregistrement éventuel d'une pénalité
                     debutsTransbordements[w] = -1
                     indicesRequetesActuelles[w] += 1
-                    
-            t += 1
+                
+        objParcours = 0     # TODO: test, neutralisation d'un objectif
         return (objRequetes, objParcours)
 
+
+
+    # Initialisation de l'algorithme génétique
+    creator.create("FitnessMulti", base.Fitness, weights=(+1.0, -1.0))     # TODO: configurer les poids
+    creator.create("Individual", list, fitness=creator.FitnessMulti)
+
+    toolbox = base.Toolbox()
+
+    toolbox.register("individual", generer_individu)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+    toolbox.register("evaluate", evaluer_individu)
+
+    toolbox.register("mate", croiser_individus)
+    toolbox.register("mutate", muter_individu)
+    toolbox.register("select", tools.selNSGA2)
+
+    # Définition des statistiques à collecter à chaque génération
+    stats = tools.Statistics(lambda aff: aff.fitness.values)
+    stats.register("avg", np.mean, axis=0)
+    stats.register("std", np.std, axis=0)
+    stats.register("min", np.min, axis=0)
+    stats.register("max", np.max, axis=0)
+
+    logbook = tools.Logbook()
+    logbook.header = ["gen", "nbevals", "avg", "std", "min", "max"]
+
+    # Exécution de l'algorithme
+    pop = toolbox.population(n=config.taillePopulation)
+    nbGenerations = config.nbGenerations
+    cxpb, mutpb = config.cxpb, config.mutpb    # Probabilités de croisement et de mutation
+
+    # Evaluation initiale
+    for ind in pop:
+        ind.fitness.values = toolbox.evaluate(ind)
+
+    # Boucle de l'algorithme NSGA-II
+    for gen in range(nbGenerations):
+        progeniture = algorithms.varAnd(pop, toolbox, cxpb, mutpb)
+        for ind in progeniture:
+            ind.fitness.values = toolbox.evaluate(ind)
+        pop = toolbox.select(pop + progeniture, k=len(pop))
+
+        # Affichage des statistiques de la population
+        record = stats.compile(pop)
+        logbook.record(gen=gen, nevals=len(progeniture), **record)
+        
+        info(logbook.stream)
+
+    # Extraction du front de pareto
+    frontPareto = tools.sortNondominated(pop, len(pop), first_front_only=True)[0]
+    info(f"Taille du front de Pareto : {len(frontPareto)}")
+    for ind in frontPareto[:5]:
+        info(f"Scores : ({int(ind.fitness.values[0])}, {int(ind.fitness.values[1])})")
+
+    meilleurInd = frontPareto[0]        # ATTENTION: certaines requêtes peuvent être remplies par la solution via le désattelage final, même sans action de dépose
+    meilleureSol = ind_to_sol(meilleurInd)          # TODO: appliquer un nettoyage, et s'assurer que les scores après nettoyage restent les mêmes.    
+    score = evaluer_solution(meilleureSol)
+    pass
+
+    """
     # TEST
     sol1: Solution = {
         0: [Mission(TypeMission.Recuperer, 0), Mission(TypeMission.Deposer, 0, 3)],
-        1: [Mission(TypeMission.Recuperer, 1), Mission(TypeMission.Deposer, 1, 4)]
+        1: [Mission(TypeMission.Recuperer, 0), Mission(TypeMission.Deposer, 0, 3)]
     }
     score = evaluer_solution(sol1)
-    pass
+    """
 
                 
 def main():
