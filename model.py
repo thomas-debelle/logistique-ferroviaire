@@ -1,4 +1,6 @@
 from igraph import Graph
+import igraph
+import matplotlib.pyplot as plt
 import tkinter as tk
 from tkinter import filedialog
 from enum import Enum
@@ -14,6 +16,7 @@ from logging import info, warning, error
 import copy
 from deap import base, creator, tools, algorithms
 import numpy as np
+import sys
 
 def pause_and_exit():
     info("Appuyez sur une touche pour continuer...")
@@ -163,6 +166,7 @@ def charger_config(cheminFichierConfig: str):
         g.add_edges(indexAretes)
         g.es['weights'] = [int(p) for p in poids]       # Conversion des poids en entiers (les durées et instants sont des entiers naturels)
         g.vs['name'] = [str(n) for n in noeuds]
+        g.vs['label'] = [str(n) for n in noeuds]
 
         return g
     
@@ -263,7 +267,7 @@ def resoudre_probleme(config: ConfigProbleme):
                 posDepose = random.randint(posRecup+1, len(sol[m]))
                 sol[m].insert(posDepose, missionDepose)
 
-        return sol_to_ind(sol)
+        return sol_to_ind(reparer_solution(sol))
     
     def reparer_solution(sol: Solution):
         # TODO: parcourir les requêtes et chercher dans les missions si la requête est résolue à un moment donné. Sinon, ajouter des missions.
@@ -337,7 +341,7 @@ def resoudre_probleme(config: ConfigProbleme):
         op = random.choice([-1, 0, 1]) if len(sol[m]) > 0 else 1                # Sélection d'une opération (1 si la motrice n'a aucune mission)
         
         if op == -1:
-            sol[m].pop(pos)
+            sol[m].pop(pos)                         # Les réparations permettront de respecter la causalité si une récupération est supprimée
         elif op == +1:
             wagon = random.choice(idWagons)
             missionRecup = Mission(TypeMission.Recuperer, wagon, -1)
@@ -353,7 +357,7 @@ def resoudre_probleme(config: ConfigProbleme):
                 pos1 = pos
                 pos2 = random.choice(autresPos)
 
-                # Echange des deux missions dans la chronologie
+                # Echange des deux missions dans la chronologie. La causalité sera garantie par les réparations.
                 sol[m][pos1], sol[m][pos2] = sol[m][pos2], sol[m][pos1]
 
         return sol_to_ind(reparer_solution(sol)),
@@ -416,13 +420,16 @@ def resoudre_probleme(config: ConfigProbleme):
         
         # Boucle principale: simulation de la solution instant par instant
         t = -1      # Garantit que t=0 à la première itération
-        nbMissionsTotal = sum([len(l) for l in sol.values()])                       # Tant que toutes les missions n'ont pas été évaluées
+        nbMissionsTotal = sum([len(l) for l in sol.values()])
+        nbRequetesTotal = sum([len(l) for l in config.requetes.values()])
         nbMissionsEvalues = 0
-        while ((nbMissionsEvalues < nbMissionsTotal 
-               or any(wagonsEnAttente.values()) 
-               or any(trans >= 0 for trans in debutsTransbordements.values()))
-               and t < config.horizonTemporel):         # L'horizon temporel permet d'éviter d'être bloqué indéfiniment dans la boucle (si deux motrices cherchent mutuellement à récupérer un wagon attelé à l'autre, par exemple)
+        nbRequetesEvaluees = 0
+        while (nbMissionsEvalues < nbMissionsTotal or nbRequetesEvaluees < nbRequetesTotal):
             t += 1
+
+            # L'horizon temporel permet d'éviter d'être bloqué indéfiniment dans la boucle (si deux motrices cherchent mutuellement à récupérer un wagon attelé à l'autre, par exemple)
+            if t >= config.horizonTemporel:
+                return (sys.maxsize, sys.maxsize)           # La solution est complètement invalidée
 
             # ---------------------------------------------------------
             # Mise à jour des motrices et missions
@@ -507,19 +514,17 @@ def resoudre_probleme(config: ConfigProbleme):
                 
                 # Fin du transbordement et validation de la requête
                 if t - debutsTransbordements[w] >= requete.dureeTransbordement:
-                    penaliteRetard = max(debutsTransbordements[w] - requete.tempsFin, 0) * config.coeffPenaliteRetard
-                    objRequetes += max(config.baseScoreRequetes - penaliteRetard, 0)      # Fin de la requête et calcul du score, avec enregistrement éventuel d'une pénalité
+                    objRequetes += max(debutsTransbordements[w] - requete.tempsFin, 0)          # Ajout d'un coût si la requête est terminée en retard
                     debutsTransbordements[w] = -1
                     indicesRequetesActuelles[w] += 1
+                    nbRequetesEvaluees += 1
                 
-        objParcours = 0     # TODO: test, neutralisation d'un objectif
         return (objRequetes, objParcours)
 
 
-
     # Initialisation de l'algorithme génétique
-    creator.create("FitnessMulti", base.Fitness, weights=(+1.0, -1.0))     # TODO: configurer les poids
-    creator.create("Individual", list, fitness=creator.FitnessMulti)
+    creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))     # TODO: configurer les poids
+    creator.create("Individual", list, fitness=creator.FitnessMin)
 
     toolbox = base.Toolbox()
 
@@ -571,9 +576,22 @@ def resoudre_probleme(config: ConfigProbleme):
 
     meilleurInd = frontPareto[0]        # ATTENTION: certaines requêtes peuvent être remplies par la solution via le désattelage final, même sans action de dépose
     meilleureSol = ind_to_sol(meilleurInd)          # TODO: appliquer un nettoyage, et s'assurer que les scores après nettoyage restent les mêmes.    
-    score = evaluer_solution(meilleureSol)
-    pass        # TODO : compléter l'exécution
+    return meilleureSol
 
+def afficher_solution(sol: Solution, config: ConfigProbleme):
+    layout = config.graphe.layout('kk')
+    fig, ax = plt.subplots()
+    igraph.plot(
+        config.graphe,
+        target=ax,
+        layout=layout,
+        vertex_size=30,
+        vertex_color="lightblue",
+        vertex_label=config.graphe.vs['label'],
+        edge_arrow_size=0.5
+    )
+    plt.show()
+    pass # TODO: afficher l'évolution de la solution
                 
 def main():
     # Initialisation de Tkinter (sans interface graphique)
@@ -587,7 +605,8 @@ def main():
     initialiser_logs(config)
 
     # Résolution du problème
-    resoudre_probleme(config)
+    sol = resoudre_probleme(config)
+    afficher_solution(sol, config)
 
     # Fin du programme
     terminer_programme(config)
