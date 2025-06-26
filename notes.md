@@ -1,6 +1,7 @@
 ## TODO
-- Ajouter des mission d'attente, pour éviter de parcourir du chemin inutile.
+- Réfléchir sur la question de l'attente: actuellement, le modèle préfère Récupérer/Déposer en boucle plutôt qu'attendre (voir config_deux_zones avec des débuts de requête à 20).
 - Introduire un temps d'affectation pour temporiser.
+- Améliorer la génération des solutions initiales.
 - Ajouter des vérifications sur le fait que les cibles des missions de dépose sont des noeuds de gare. Vérifier aussi que les wagons sont initialement sur des noeuds de gare.
 - Vérifier la config (que les requêtes correspondent au problème, par exemple)
 - Introduire un critère de fin pour l'algorithme.

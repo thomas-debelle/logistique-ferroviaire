@@ -48,25 +48,30 @@ class ConfigProbleme:
         self.motrices = {}
         self.wagons = {}
 
-        # Constantes
-        self.baseScoreRequetes = 10            # Récompense maximale lors de la validation d'une requête dans les temps
-        self.coeffPenaliteRetard = 1.0
-
 class TypeMission(Enum):
     Recuperer = 1
     Deposer = 2
+    Attendre = 3
 
 class Mission:
-    def __init__(self, typeMission: TypeMission, wagon: int, noeud: int = -1) -> None:
+    def __init__(self, typeMission: TypeMission, wagon: int = -1, noeud: int = -1, instant: int = -1) -> None:
         """
         Pour certaine missions (par exemple celles de type "Récupérer") le paramètre de noeud n'est pas nécessaire et est déterminé automatiquement dans l'algorithme.
         """
         self.typeMission = typeMission
         self.wagon = wagon
         self.noeud = noeud
+        self.instant = instant
 
     def __str__(self) -> str:
-        return f"({self.typeMission}, {self.wagon}, {self.noeud})"
+        if self.typeMission == TypeMission.Recuperer:
+            return f"(Réc. W{self.wagon})"
+        elif self.typeMission == TypeMission.Deposer:
+            return f"(Dép. W{self.wagon} en N{self.noeud})"
+        elif self.typeMission == TypeMission.Attendre:
+            return f"(Att. T{self.instant})"
+        else:
+            return ""
 
     def __repr__(self) -> str:
         return str(self)
@@ -233,6 +238,7 @@ def charger_config(cheminFichierConfig: str):
 def resoudre_probleme(config: ConfigProbleme):
     idMotrices = list(config.motrices.keys())
     idWagons = list(config.wagons.keys())
+    dernierInstantDebutRequete = max([v.tempsDebut for l in config.requetes.values() for v in l])
 
 
     def sol_to_ind(solution: Solution):
@@ -270,12 +276,7 @@ def resoudre_probleme(config: ConfigProbleme):
         return sol_to_ind(reparer_solution(sol))
     
     def reparer_solution(sol: Solution):
-        # TODO: parcourir les requêtes et chercher dans les missions si la requête est résolue à un moment donné. Sinon, ajouter des missions.
-        # Si un wagon arrive trop tôt à sa cible, la requête est considérée comme résoluee (car le wagon sera alors mis en attente).
-        # On ne souhaite vérifier que la séquentialité des wagons. Les éléments temporels seront évalués ultérieurement
-
-
-        # Parcours des missions de chaque motrice
+        # Parcours des missions de chaque motrice pour vérifier la causalité (récupération des wagons avant dépose, etc)
         indicesRequetes = dict.fromkeys(idWagons, 0)            # Indices des requêtes à vérifier
         for m in idMotrices:
             wagonsAtteles = dict.fromkeys(idWagons, False)
@@ -316,7 +317,7 @@ def resoudre_probleme(config: ConfigProbleme):
                 posSupprimees += 1
 
 
-        # Pour chaque requête non vérifiée, ajout de missions sur des motrices au hasard 
+        # Pour chaque requête non vérifiée, ajout des missions sur une motrice au hasard
         for w in idWagons:
             while indicesRequetes[w] < len(config.requetes[w]):
                 requete = config.requetes[w][indicesRequetes[w]]
@@ -338,17 +339,26 @@ def resoudre_probleme(config: ConfigProbleme):
 
         m = random.choice(idMotrices)
         pos = random.randint(0, len(sol[m])-1) if len(sol[m]) > 0 else 0
-        op = random.choice([-1, 0, 1]) if len(sol[m]) > 0 else 1                # Sélection d'une opération (1 si la motrice n'a aucune mission)
+        op = random.choice([0, 1, 2, 3]) if len(sol[m]) > 0 else 1                # Sélection d'une opération (1 si la motrice n'a aucune mission)
         
-        if op == -1:
+        # Suppression de la mission à la position pos
+        if op == 0:
             sol[m].pop(pos)                         # Les réparations permettront de respecter la causalité si une récupération est supprimée
-        elif op == +1:
+        # Insertion d'une mission aléatoire à la position pos
+        elif op == 1:
             wagon = random.choice(idWagons)
-            missionRecup = Mission(TypeMission.Recuperer, wagon, -1)
-            missionDepose = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudsGare))
+            subOp = random.choice([-1, 0, +1])
+            mission = None
+            if subOp == -1:
+                mission = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudsGare))
+            elif subOp == 0:
+                mission = Mission(TypeMission.Attendre, wagon, random.choice(config.noeudsGare))
+                mission.instant = random.choice(range(1, dernierInstantDebutRequete))
+            else:       # subOp == +1
+                mission = Mission(TypeMission.Recuperer, wagon, -1)
 
-            sol[m].insert(pos, missionDepose)
-            sol[m].insert(pos, missionRecup)        # Insertion de la dépose puis de la récup pour respecter l'ordre. Les missions sont directement consécutives.
+            sol[m].insert(pos, mission)
+        # Echange de deux missions
         else:   # op == 0
             if len(sol[m]) > 1:
                 # Extraction de deux positions
@@ -479,6 +489,9 @@ def resoudre_probleme(config: ConfigProbleme):
                     if attelages[wagonMission] == m:
                         attelages[wagonMission] = -1                    # Suppression de l'attelage
                     missionValidee = True                               # La mission est validée dans tous les cas (même si le wagon n'est pas attelé à la motrice)
+                elif missionActuelle.typeMission == TypeMission.Attendre:
+                    if t >= missionActuelle.instant:                    # Attend que l'instant soit dépassé pour autoriser un déplacement de la motrice
+                        missionValidee = True
 
                 # Si la mission a pu être validée, passage à la suivante
                 if missionValidee:
@@ -503,8 +516,9 @@ def resoudre_probleme(config: ConfigProbleme):
 
                 # Si le wagon est en avance, il est placé en attente de transbordement
                 if t < requete.tempsDebut:
-                    wagonsEnAttente[w] = True
-                    continue                # TODO: voir si besoin d'appliquer une pénalité d'avance (dans ce cas, nécessite de modéliser l'encombrement maximal à chaque noeud)
+                    wagonsEnAttente[w] = True               # Blocage du wagon en avance
+                    objRequetes += 1        # TODO: voir si besoin d'appliquer une pénalité d'avance
+                    continue
                 else:
                     wagonsEnAttente[w] = False              # Déblocage du wagon
 
