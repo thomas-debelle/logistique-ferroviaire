@@ -25,15 +25,18 @@ mutpb: 0.2
 
 
 # --------------------------------------------------------------
-# STRUCTURE DU PROBLEME
+# PARAMETRES DE RESOLUTION
 # --------------------------------------------------------------
-# Nombre de missions maximum à la génération des solutions
+# Nombre de missions maximum à la génération des solutions # TODO: changer le nom
 nbMissionsMax: 5
 
 # Nombre d'instants maximum simulés
 horizonTemporel: 500
 
 
+# --------------------------------------------------------------
+# INSTANCE DU PROBLEME
+# --------------------------------------------------------------
 graphe:
   0: {1: 2, 5: 4}
   1: {0: 2, 2: 2, 6: 3}

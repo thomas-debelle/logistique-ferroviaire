@@ -589,11 +589,24 @@ def resoudre_probleme(config: ConfigProbleme):
         info(f"Scores : ({int(ind.fitness.values[0])}, {int(ind.fitness.values[1])})")
 
     meilleurInd = frontPareto[0]        # ATTENTION: certaines requêtes peuvent être remplies par la solution via le désattelage final, même sans action de dépose
-    meilleureSol = ind_to_sol(meilleurInd)          # TODO: appliquer un nettoyage, et s'assurer que les scores après nettoyage restent les mêmes.    
+    meilleureSol = ind_to_sol(meilleurInd) 
     return meilleureSol
 
 def afficher_solution(sol: Solution, config: ConfigProbleme):
-    layout = config.graphe.layout('kk')
+    idMotrices = config.motrices.keys()
+    
+    info("--------------------------------------------------------")
+    info("AFFICHAGE DE LA SOLUTION")
+    info("--------------------------------------------------------")
+    for m in idMotrices:
+        info(f"Motrice {m}:")
+        for mis in sol[m]:
+            info(f" - {mis}")
+        if len(sol[m]) == 0:
+            info(" - []")
+        
+
+    layout = config.graphe.layout('kk')     # TODO: terminer (pour le moment, seulement affichage du problème)
     fig, ax = plt.subplots()
     igraph.plot(
         config.graphe,
