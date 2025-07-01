@@ -302,10 +302,6 @@ def resoudre_probleme(config: ConfigProbleme):
                     # Si la mission valide la requête (noeudMission == noeudRequete) alors on avance l'indice de requêtes validées
                     if noeudRequete != -1 and noeudMission == noeudRequete:
                         indicesRequetesValidees[w] += 1
-                    
-                    # Si la mission de Dépose a lieu juste après un Récupération du même wagon au même noeud, remplacement par une Attente
-                    # Mais comment savoir si le wagon était dans le même noeud au préalable sans simulation de la solution ?
-                    # TODO
 
                 # Redondance des missions Attendre
                 elif mission.typeMission == TypeMission.Attendre:
@@ -315,14 +311,6 @@ def resoudre_probleme(config: ConfigProbleme):
                     if missionPrecedente.typeMission == TypeMission.Attendre and mission.noeud == missionPrecedente.noeud:
                         posASupprimer[pos] = True
                         missionPrecedente.duree += mission.duree        # Ajout de la durée de la mission actuelle à la mission précédente pour réaliser la consolidation
-
-
-            # Ajout de missions de Dépose finales pour les wagons encore attelés
-            for w, b in wagonsAtteles.items():
-                if not b:       # Si le wagon n'est pas attelé à cette motrice à la fin de la simulation, on passe au suivant
-                    continue
-                noeudDepose = random.choice(config.noeudsGare)
-                sol[m].append(Mission(TypeMission.Deposer, w, noeudDepose))
                 
 
             # Suppression des missions redondantes. Les positions sont parcourues dans l'ordre croissant (important pour le décalage des indices).
@@ -332,6 +320,13 @@ def resoudre_probleme(config: ConfigProbleme):
                     continue
                 sol[m].pop(i-posSupprimees)                 # Gestion des décalages d'indice lors de la suppression de missions
                 posSupprimees += 1
+
+            # Ajout de missions de Dépose finales pour les wagons encore attelés
+            for w, b in wagonsAtteles.items():
+                if not b:       # Si le wagon n'est pas attelé à cette motrice à la fin de la simulation, on passe au suivant
+                    continue
+                noeudDepose = random.choice(config.noeudsGare)
+                sol[m].append(Mission(TypeMission.Deposer, w, noeudDepose))
 
 
         # Pour chaque requête non vérifiée, ajout des missions sur une motrice au hasard
@@ -443,7 +438,7 @@ def resoudre_probleme(config: ConfigProbleme):
         debutMissionsActuelles = {m: 0 for m in idMotrices}                         # Instant de début des missions actuellement simulées
 
         # Objectifs
-        objCoutsRequetes = 0                                                             # Coût de l'avance et du retard sur les requêtes (à minimiser)
+        objCoutsRequetes = 0                                                        # Coût de l'avance et du retard sur les requêtes (à minimiser)
         objCoutsLogistiques = 0                                                     # Coût logistique total de la solution (à minimiser)
         
         # Boucle principale: simulation de la solution instant par instant
@@ -518,17 +513,14 @@ def resoudre_probleme(config: ConfigProbleme):
                         debutAttenteMotrices[m] = t
                     if t - debutAttenteMotrices[m] >= missionActuelle.duree:           # Attend que la durée soit écoulée pour autoriser un déplacement de la motrice
                         missionValidee = True
+                        debutAttenteMotrices[m] = -1                    # Remise à 0 du compteur
 
                 # Si la mission a pu être validée, on passe à la suivante
                 if missionValidee:
                     debutMissionsActuelles[m] = t
                     indicesMissionsActuelles[m] += 1
                     nbMissionsEvalues += 1
-
-                    # TODO : déplacer cette démarche dans la réparation des solutions (pour garder une évaluation plus organique)
-                    if indicesMissionsActuelles[m] >= len(sol[m]):      # Si la dernière mission de la motrice a été terminée, suppression de tous ses attelages.
-                        attelages = {k: (-1 if v == m else v) for k, v in attelages.items()}        # Remarque: cela est équivalent à une dépose des wagons sur la dernière position de la motrice.
-                        objCoutsLogistiques += (len(attelages) - list(attelages.values()).count(-1)) * config.coutUnitaireAttelage      # Calcul du nombre d'attelages restant
+                    
 
             # ---------------------------------------------------------
             # Mise à jour des wagons et requêtes

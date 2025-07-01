@@ -1,16 +1,15 @@
 ## TODO
 - Introduire un temps d'affectation pour temporiser. Expliciter les temps d'attente (notamment, est-ce qu'un attelage et une dépose successifs prennent 2 instants ou un instant ? Combien de temps prend l'attelage après l'arrivée dans un noeud ? Est-ce gratuit en terme de temps ?)
-- Ajouter les déposes des attelages restants à la réparation des solutions (au lieu de l'évaluation).
 - Voir s'il est toujours utile de vérifier la causalité dans les solutions, sachant que les manips supplémentaires rentrent désormais dans les coûts logistiques. Proposer alors une fonction de nettoyage pour éviter les missions inutiles (s'il en reste à la fin de l'optimisation)
 - Ajouter des vérifications sur le fait que les cibles des missions de dépose sont des noeuds de gare. Vérifier aussi que les wagons sont initialement sur des noeuds de gare.
 - Vérifier la config (que les requêtes correspondent au problème, par exemple)
-- Introduire un critère de fin pour l'algorithme.
-- Afficher les solutions sous forme textuelle.
+- Séparer le problème de la configuration.
 
 
 ## Moyen terme
+- Considérer le fait que l'attelage de wagon est LIFO. Augmenter les coûts logistique si le LIFO n'est pas respecté.
 - Ajouter des capacités max en terme de wagons et de motrices dans les gares.
-- Considérer le fait que l'attelage de wagon est LIFO ?
+- Introduire un critère de fin pour l'algorithme ?
 - Créer le code permettant de générer des instances du problème à partir du réseau SNCF.
 - Évaluer la complexité numérique du MILP équivalent. Donner le nombre de contraintes générées en fonction des différents paramètres du modèle : horizon temporel, taille du réseau, nombre de motrice, taille du planning...
 - Parcourir les commentaire dans le rapport.
