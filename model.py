@@ -39,8 +39,10 @@ class ConfigProbleme:
         self.cxpb = 0.85
         self.mutpb = 0.1
         
-        self.nbMissionsMax = 5
         self.horizonTemporel = 500
+        self.coutUnitaireRequetes = 1
+        self.coutUnitaireAttelage = 1
+        self.coutUnitaireDeplacement = 1
 
         self.graphe: Graph = None
         self.noeudsGare = []
@@ -54,14 +56,14 @@ class TypeMission(Enum):
     Attendre = 3
 
 class Mission:
-    def __init__(self, typeMission: TypeMission, wagon: int = -1, noeud: int = -1, instant: int = -1) -> None:
+    def __init__(self, typeMission: TypeMission, wagon: int = -1, noeud: int = -1, duree: int = -1) -> None:
         """
         Pour certaine missions (par exemple celles de type "Récupérer") le paramètre de noeud n'est pas nécessaire et est déterminé automatiquement dans l'algorithme.
         """
         self.typeMission = typeMission
         self.wagon = wagon
         self.noeud = noeud
-        self.instant = instant
+        self.duree = duree
 
     def __str__(self) -> str:
         if self.typeMission == TypeMission.Recuperer:
@@ -69,7 +71,7 @@ class Mission:
         elif self.typeMission == TypeMission.Deposer:
             return f"(Dép. W{self.wagon} en N{self.noeud})"
         elif self.typeMission == TypeMission.Attendre:
-            return f"(Att. T{self.instant})"
+            return f"(Att. {self.duree} en N{self.noeud})"
         else:
             return ""
 
@@ -195,8 +197,10 @@ def charger_config(cheminFichierConfig: str):
             config.cxpb = float(donnees['cxpb'])
             config.mutpb = float(donnees['mutpb'])
 
-            config.nbMissionsMax = int(donnees['nbMissionsMax'])        # TODO: renommer (car uniquement utilisé à la génération initiale de solutions)
             config.horizonTemporel = int(donnees['horizonTemporel'])
+            config.coutUnitaireRequetes = int(donnees['coutUnitaireRequetes'])
+            config.coutUnitaireAttelage = int(donnees['coutUnitaireAttelage'])
+            config.coutUnitaireDeplacement = int(donnees['coutUnitaireDeplacement'])
 
 
             # Lecture du graphe
@@ -258,51 +262,62 @@ def resoudre_probleme(config: ConfigProbleme):
         return solution
     
     def generer_individu():
-        sol: Solution = dict()
-
-        for m in idMotrices:
-            sol[m] = []
-            for i in range(random.randint(1, floor(config.nbMissionsMax / 2))):         # /2 car pour chaque récupération, une dépose est ajouée
-                wagon = random.choice(idWagons)
-                missionRecup = Mission(TypeMission.Recuperer, wagon, -1)                        # Ira récupérer le wagon sur n'importe quel noeud
-                missionDepose = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudsGare))
-                
-                # Insère les nouvelles missions tout en respectant la précédence
-                posRecup = random.randint(0, len(sol[m]))                   # Les bornes de randint sont inclues
-                sol[m].insert(posRecup, missionRecup)
-                posDepose = random.randint(posRecup+1, len(sol[m]))
-                sol[m].insert(posDepose, missionDepose)
-
+        sol: Solution = dict.fromkeys(idMotrices, [])
         return sol_to_ind(reparer_solution(sol))
     
     def reparer_solution(sol: Solution):
-        # Parcours des missions de chaque motrice pour vérifier la causalité (récupération des wagons avant dépose, etc)
-        indicesRequetes = dict.fromkeys(idWagons, 0)            # Indices des requêtes à vérifier
+        """
+        Parcours les missions de chaque motrice pour vérifier la causalité (récupération des wagons avant dépose, etc).
+        On vérifie également que toutes les requêtes soient traitées par la solution. Si certaines requêtes ne sont pas traitées, on ajoute des missions à des motrices au hasard.
+        Supprime les missions invalides ou redondantes.
+        """
+        # Parcours de toutes les motrices
+        indicesRequetesValidees = dict.fromkeys(idWagons, 0)
         for m in idMotrices:
+            nbMissions = len(sol[m])
             wagonsAtteles = dict.fromkeys(idWagons, False)
-            posASupprimer = []
-            for pos in range(len(sol[m])):
+            posASupprimer = [False] * nbMissions
+
+            # Parcours de toutes les missions à partir de leurs positions
+            for pos in range(nbMissions):
                 mission = sol[m][pos]
                 w = mission.wagon
 
-                # Vérification des missions redondantes
+                # Redondance des mission Récupérer
                 if mission.typeMission == TypeMission.Recuperer:
-                    if wagonsAtteles[w]:
-                        posASupprimer.append(pos)           # Si le wagon est déjà attelé, la mission est redondante
-                    else:
-                        wagonsAtteles[w] = True             # Sinon, on met à jour l'attelage
-                elif mission.typeMission == TypeMission.Deposer:
-                    if not wagonsAtteles[w]:
-                        posASupprimer.append(pos)           # Si le wagon n'est pas attelé, la mission est redondante
-                    else:
-                        wagonsAtteles[w] = False
-                        
-                        # Si le déplacement de la mission valide la requête, alors on évalue la requête suivante
-                        noeudMission = mission.noeud
-                        if indicesRequetes[w] < len(config.requetes[w]) and noeudMission == config.requetes[w][indicesRequetes[w]].noeud:
-                            indicesRequetes[w] += 1
+                    if wagonsAtteles[w]:                        # Si le wagon est déjà attelé, la mission est redondante
+                        posASupprimer[pos] = True
+                        continue
+                    wagonsAtteles[w] = True                     # Sinon, on met à jour l'attelage
 
-            # Ajout de missions de dépose pour les wagons encore attelés
+                # Redondance des missions Déposer
+                elif mission.typeMission == TypeMission.Deposer:
+                    if not wagonsAtteles[w]:                    # Si le wagon n'est pas attelé, la mission est redondante
+                        posASupprimer[pos] = True
+                        continue 
+                    wagonsAtteles[w] = False                    # Sinon, on met à jour l'attelage et on vérifie d'autres éléments relatifs à la mission
+                    noeudMission = mission.noeud
+                    noeudRequete = config.requetes[w][indicesRequetesValidees[w]].noeud if indicesRequetesValidees[w] < len(config.requetes[w]) else -1
+                    
+                    # Si la mission valide la requête (noeudMission == noeudRequete) alors on avance l'indice de requêtes validées
+                    if noeudRequete != -1 and noeudMission == noeudRequete:
+                        indicesRequetesValidees[w] += 1
+                    
+                    # Si la mission de Dépose a lieu juste après un Récupération du même wagon au même noeud, remplacement par une Attente
+                    # Mais comment savoir si le wagon était dans le même noeud au préalable sans simulation de la solution ?
+                    # TODO
+
+                # Redondance des missions Attendre
+                elif mission.typeMission == TypeMission.Attendre:
+                    if pos == 0:
+                        continue
+                    missionPrecedente = sol[m][pos-1]                   # Si la mission précédente était aussi une mission Attendre au même noeud, alors on consolide les mission en une seule
+                    if missionPrecedente.typeMission == TypeMission.Attendre and mission.noeud == missionPrecedente.noeud:
+                        posASupprimer[pos] = True
+                        missionPrecedente.duree += mission.duree        # Ajout de la durée de la mission actuelle à la mission précédente pour réaliser la consolidation
+
+
+            # Ajout de missions de Dépose finales pour les wagons encore attelés
             for w, b in wagonsAtteles.items():
                 if not b:       # Si le wagon n'est pas attelé à cette motrice à la fin de la simulation, on passe au suivant
                     continue
@@ -310,23 +325,25 @@ def resoudre_probleme(config: ConfigProbleme):
                 sol[m].append(Mission(TypeMission.Deposer, w, noeudDepose))
                 
 
-            # Suppression des missions redondantes avec gestion des décalages. Les positions sont triées dans l'ordre croissant.
-            posSupprimees = 0               
-            for p in posASupprimer:
-                sol[m].pop(p-posSupprimees)                 # Gestion des décalages d'indice lors de la suppression de missions
+            # Suppression des missions redondantes. Les positions sont parcourues dans l'ordre croissant (important pour le décalage des indices).
+            posSupprimees = 0
+            for i in range(nbMissions):
+                if not posASupprimer[i]:
+                    continue
+                sol[m].pop(i-posSupprimees)                 # Gestion des décalages d'indice lors de la suppression de missions
                 posSupprimees += 1
 
 
         # Pour chaque requête non vérifiée, ajout des missions sur une motrice au hasard
         for w in idWagons:
-            while indicesRequetes[w] < len(config.requetes[w]):
-                requete = config.requetes[w][indicesRequetes[w]]
+            while indicesRequetesValidees[w] < len(config.requetes[w]):
+                requete = config.requetes[w][indicesRequetesValidees[w]]
                 noeudRequete = requete.noeud
                 m = random.choice(idMotrices)
 
                 sol[m].append(Mission(TypeMission.Recuperer, w, -1))
                 sol[m].append(Mission(TypeMission.Deposer, w, noeudRequete))
-                indicesRequetes[w] += 1
+                indicesRequetesValidees[w] += 1
         
         return sol
     
@@ -347,13 +364,13 @@ def resoudre_probleme(config: ConfigProbleme):
         # Insertion d'une mission aléatoire à la position pos
         elif op == 1:
             wagon = random.choice(idWagons)
-            subOp = random.choice([-1, 0, +1])
+            subOp = random.choice([-1, 0, +1])      # Sélection d'une sous-opération, avec l'insertion d'une mission Ajout, Attendre (avec durée unitaire) ou Récupérer.
             mission = None
             if subOp == -1:
                 mission = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudsGare))
             elif subOp == 0:
                 mission = Mission(TypeMission.Attendre, wagon, random.choice(config.noeudsGare))
-                mission.instant = random.choice(range(1, dernierInstantDebutRequete))
+                mission.duree = 1
             else:       # subOp == +1
                 mission = Mission(TypeMission.Recuperer, wagon, -1)
 
@@ -409,24 +426,25 @@ def resoudre_probleme(config: ConfigProbleme):
         Les positions cibles des missions de Récupération sont déterminées dynamiquement à partir des positions des wagons.
         Une solution est une séquence de missions imposées à chaque motrice. Si un wagon arrive trop tôt dans son noeud de destination, il est mis en attente.
         """
-        # Variable de simulation
+        # Variable de simulation        # TODO: éviter de tout redéclarer à chaque appel de évaluer_solution.
         dernierNoeudMotrices = copy.deepcopy(config.motrices)
         dernierNoeudWagons = copy.deepcopy(config.wagons)
         prochainNoeudMotrices = copy.deepcopy(config.motrices)
         prochainNoeudWagons = copy.deepcopy(config.wagons)
         
-        attelages = {w: -1 for w in idWagons}                                       # Associe une motrice (valeur) à chaque wagon (clé). Si l'attelage est <0, alors le wagon n'est attelé à aucune motrice.
-        debutsTransbordements = {w: -1 for w in idWagons}                           # Instant de début du dernier transbordement de chaque wagon. Si la valeur est à -1, cela signifie qu'aucun transbordement n'est en cours.
-        wagonsEnAttente = {w: False for w in idWagons}                              # La valeur associée à chaque wagon passe à True lorsqu'ils sont dans l'attente d'être transbordés.
+        debutAttenteMotrices = {m: -1 for m in idMotrices}                          # Instant de début de l'attente de chaque motrice. Si la valeur est à -1, la motrice n'est pas en attente.
+        attelages = {w: -1 for w in idWagons}                                       # Associe une motrice (valeur) à chaque wagon (clé). Si l'attelage est <0, le wagon n'est attelé à aucune motrice.
+        debutTransbordements = {w: -1 for w in idWagons}                            # Instant de début du transbordement de chaque wagon. Si la valeur est à -1, aucun transbordement n'est en cours.
+        wagonsEnAttente = {w: False for w in idWagons}                              # La valeur associée à chaque wagon passe à True lorsqu'ils sont dans l'attente d'être transbordés. Ne pas confondre les wagons en attente et les wagons en cours de transbordement.
 
         # Variable de gestion des requêtes et des missions
         indicesMissionsActuelles = {m: 0 for m in idMotrices}                       # Indices des missions actuellement évaluées
         indicesRequetesActuelles = {w: 0 for w in idWagons}                         # Indices des requêtes actuellement évaluées
-        debutsMissionsActuelles = {m: 0 for m in idMotrices}                        # Instant de début des missions actuellement simulées
+        debutMissionsActuelles = {m: 0 for m in idMotrices}                         # Instant de début des missions actuellement simulées
 
         # Objectifs
-        objRequetes = 0                                                             # Score obtenu en répondant à des requêtes (à maximiser)
-        objParcours = 0                                                             # Durée totale de parcours des motrices (à minimiser)
+        objCoutsRequetes = 0                                                             # Coût de l'avance et du retard sur les requêtes (à minimiser)
+        objCoutsLogistiques = 0                                                     # Coût logistique total de la solution (à minimiser)
         
         # Boucle principale: simulation de la solution instant par instant
         t = -1      # Garantit que t=0 à la première itération
@@ -451,7 +469,7 @@ def resoudre_probleme(config: ConfigProbleme):
                 # Extraction des informations liées à la motrice
                 missionActuelle = sol[m][indicesMissionsActuelles[m]]
                 depart = dernierNoeudMotrices[m]
-                arrivee = prochainNoeudWagons[missionActuelle.wagon] if missionActuelle.typeMission == TypeMission.Recuperer else missionActuelle.noeud     # Pour une mission de type "Récupérer": la motrice se dirige au même emplacement que son wagon cible
+                arrivee = prochainNoeudWagons[missionActuelle.wagon] if missionActuelle.typeMission == TypeMission.Recuperer else missionActuelle.noeud     # Pour une mission de type "Récupérer": la motrice se dirige au même emplacement que son wagon cible. Sinon, elle se rend au noeud renseigné dans la mission.
                 wagonsAtteles = [w for w in attelages.keys() if attelages[w] == m]
 
                 # Mise à jour des prochaines positions de la motrice et de ses attelages    # TODO: ne pas faire à chaque itération, seulement au début et au changement de mission. Permet aussi de ne pas recalculer l'arrivée à chaque itération
@@ -459,15 +477,15 @@ def resoudre_probleme(config: ConfigProbleme):
                 for w in wagonsAtteles:            # Extraction des wagons attelés à la motrice
                     prochainNoeudWagons[w] = arrivee
 
-                # Calcul du temps de parcours restant jusqu'à l'arrivée
+                # Calcul du temps de parcours restant jusqu'au noeud d'arrivée
                 tempsParcours = int(config.graphe.distances(depart, arrivee, weights='weights')[0][0])
-                tempsRestant = tempsParcours - (t - debutsMissionsActuelles[m])
+                tempsParcoursRestant = tempsParcours - (t - debutMissionsActuelles[m])
 
 
                 # Lorsque la motrice atteint sa destination:
                 # On tente de réaliser l'action liée à la mission. Si ce n'est pas possible, la mission n'est pas immédiatement validée.
                 missionValidee = False
-                if tempsRestant > 0:    # Si tempsRestant < 0, cela signifie que la motrice est arrivée à destination avant t (cela devra être pris en compte s'il y a implémentation d'une trace plus tard).
+                if tempsParcoursRestant > 0:    # Si tempsRestant < 0, cela signifie que la motrice est arrivée à destination avant t (cela devra être pris en compte s'il y a implémentation d'une trace plus tard).
                     continue            # Si la motrice n'est pas encore à destination (il reste du temps de déplacement) on ne réalise pas d'autre traitement
 
                 # Mise à jour des dernières positions de la motrice et de ses attelages
@@ -476,31 +494,41 @@ def resoudre_probleme(config: ConfigProbleme):
                     dernierNoeudWagons[w] = arrivee
 
                 # Ajout du déplacement à l'objectif de parcours
-                objParcours += tempsParcours     # TODO: voir comment cela se comporte si le wagon cible est bloqué lorsque la motrice arrive à destination
+                objCoutsLogistiques += tempsParcours * config.coutUnitaireDeplacement     # TODO: voir comment cela se comporte si le wagon cible est bloqué lorsque la motrice arrive à destination
                 
-                # Mise à jour des attelages
+                # Mise à jour des attelages et validation des missions
                 wagonMission = missionActuelle.wagon
-                if (missionActuelle.typeMission == TypeMission.Recuperer):       # Si le wagon n'est pas attelé à une autre motrice ou est déjà attelé, la mission peut être validée
-                    wagonEstDisponible = attelages[wagonMission] < 0 and (not wagonsEnAttente[wagonMission]) and debutsTransbordements[wagonMission] < 0     # Vérifie que le wagon ne subit aucune opération
-                    if wagonEstDisponible or attelages[wagonMission] == m:
+                
+                # Mission Récupérer
+                if (missionActuelle.typeMission == TypeMission.Recuperer):      # Si le wagon n'est pas attelé à une autre motrice ou est déjà attelé, la mission peut être validée
+                    wagonEstDisponible = attelages[wagonMission] < 0 and (not wagonsEnAttente[wagonMission]) and debutTransbordements[wagonMission] < 0     # Vérifie que le wagon ne subit aucune opération
+                    if wagonEstDisponible or attelages[wagonMission] == m:      # Si la solution a bien été réparée, la deuxième condition n'est pas nécessaire
                         attelages[wagonMission] = m
+                        objCoutsLogistiques += config.coutUnitaireAttelage
                         missionValidee = True
+                # Mission Déposer
                 elif missionActuelle.typeMission == TypeMission.Deposer:
                     if attelages[wagonMission] == m:
                         attelages[wagonMission] = -1                    # Suppression de l'attelage
+                        objCoutsLogistiques += config.coutUnitaireAttelage
                     missionValidee = True                               # La mission est validée dans tous les cas (même si le wagon n'est pas attelé à la motrice)
+                # Mission Déposer
                 elif missionActuelle.typeMission == TypeMission.Attendre:
-                    if t >= missionActuelle.instant:                    # Attend que l'instant soit dépassé pour autoriser un déplacement de la motrice
+                    if debutAttenteMotrices[m] < 0:                     # Mise en attente de la motrice
+                        debutAttenteMotrices[m] = t
+                    if t - debutAttenteMotrices[m] >= missionActuelle.duree:           # Attend que la durée soit écoulée pour autoriser un déplacement de la motrice
                         missionValidee = True
 
-                # Si la mission a pu être validée, passage à la suivante
+                # Si la mission a pu être validée, on passe à la suivante
                 if missionValidee:
-                    debutsMissionsActuelles[m] = t
+                    debutMissionsActuelles[m] = t
                     indicesMissionsActuelles[m] += 1
                     nbMissionsEvalues += 1
 
+                    # TODO : déplacer cette démarche dans la réparation des solutions (pour garder une évaluation plus organique)
                     if indicesMissionsActuelles[m] >= len(sol[m]):      # Si la dernière mission de la motrice a été terminée, suppression de tous ses attelages.
                         attelages = {k: (-1 if v == m else v) for k, v in attelages.items()}        # Remarque: cela est équivalent à une dépose des wagons sur la dernière position de la motrice.
+                        objCoutsLogistiques += (len(attelages) - list(attelages.values()).count(-1)) * config.coutUnitaireAttelage      # Calcul du nombre d'attelages restant
 
             # ---------------------------------------------------------
             # Mise à jour des wagons et requêtes
@@ -517,23 +545,23 @@ def resoudre_probleme(config: ConfigProbleme):
                 # Si le wagon est en avance, il est placé en attente de transbordement
                 if t < requete.tempsDebut:
                     wagonsEnAttente[w] = True               # Blocage du wagon en avance
-                    objRequetes += 1        # TODO: voir si besoin d'appliquer une pénalité d'avance
+                    objCoutsRequetes += config.coutUnitaireRequetes                   # Application d'une pénalité d'avance
                     continue
                 else:
                     wagonsEnAttente[w] = False              # Déblocage du wagon
 
                 # Début du transbordement
-                if debutsTransbordements[w] < 0:            # Si le transbordement n'a pas commencé pour ce wagon
-                    debutsTransbordements[w] = t
+                if debutTransbordements[w] < 0:            # Si le transbordement n'a pas commencé pour ce wagon
+                    debutTransbordements[w] = t
                 
                 # Fin du transbordement et validation de la requête
-                if t - debutsTransbordements[w] >= requete.dureeTransbordement:
-                    objRequetes += max(debutsTransbordements[w] - requete.tempsFin, 0)          # Ajout d'un coût si la requête est terminée en retard
-                    debutsTransbordements[w] = -1
+                if t - debutTransbordements[w] >= requete.dureeTransbordement:
+                    objCoutsRequetes += max(debutTransbordements[w] - requete.tempsFin, 0) * config.coutUnitaireRequetes          # Ajout d'un coût si la requête est terminée en retard
+                    debutTransbordements[w] = -1
                     indicesRequetesActuelles[w] += 1
                     nbRequetesEvaluees += 1
                 
-        return (objRequetes, objParcours)
+        return (objCoutsRequetes, objCoutsLogistiques)
 
 
     # Initialisation de l'algorithme génétique

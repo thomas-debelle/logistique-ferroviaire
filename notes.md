@@ -1,7 +1,7 @@
 ## TODO
-- Réfléchir sur la question de l'attente: actuellement, le modèle préfère Récupérer/Déposer en boucle plutôt qu'attendre (voir config_deux_zones avec des débuts de requête à 20).
-- Introduire un temps d'affectation pour temporiser.
-- Améliorer la génération des solutions initiales.
+- Introduire un temps d'affectation pour temporiser. Expliciter les temps d'attente (notamment, est-ce qu'un attelage et une dépose successifs prennent 2 instants ou un instant ? Combien de temps prend l'attelage après l'arrivée dans un noeud ? Est-ce gratuit en terme de temps ?)
+- Ajouter les déposes des attelages restants à la réparation des solutions (au lieu de l'évaluation).
+- Voir s'il est toujours utile de vérifier la causalité dans les solutions, sachant que les manips supplémentaires rentrent désormais dans les coûts logistiques. Proposer alors une fonction de nettoyage pour éviter les missions inutiles (s'il en reste à la fin de l'optimisation)
 - Ajouter des vérifications sur le fait que les cibles des missions de dépose sont des noeuds de gare. Vérifier aussi que les wagons sont initialement sur des noeuds de gare.
 - Vérifier la config (que les requêtes correspondent au problème, par exemple)
 - Introduire un critère de fin pour l'algorithme.
