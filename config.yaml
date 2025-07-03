@@ -12,7 +12,7 @@ nbLogsMax: 1
 # PARAMETRES DE L'ALGORITHME GENETIQUE
 # --------------------------------------------------------------
 # Nombre de générations à calculer. Plus la valeur est grande, plus l'algorithme pourra explorer de solutions. 
-nbGenerations: 5
+nbGenerations: 100
 
 # Nombre de solutions générées à chaque génération.
 taillePopulation: 150

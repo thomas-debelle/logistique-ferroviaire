@@ -258,8 +258,28 @@ def charger_probleme(cheminFichierProbleme: str):
     
 
 def resoudre_probleme(config: Config, probleme: Probleme):
+    # Création d'alias
     idMotrices = list(probleme.motrices.keys())
     idWagons = list(probleme.wagons.keys())
+
+    # Variables de simulation
+    dernierNoeudMotrices = copy.deepcopy(probleme.motrices)
+    dernierNoeudWagons = copy.deepcopy(probleme.wagons)
+    prochainNoeudMotrices = copy.deepcopy(probleme.motrices)
+    prochainNoeudWagons = copy.deepcopy(probleme.wagons)
+        
+    debutAttenteMotrices = {m: -1 for m in idMotrices}                          # Instant de début de l'attente de chaque motrice. Si la valeur est à -1, la motrice n'est pas en attente.
+    debutTransbordements = {w: -1 for w in idWagons}                            # Instant de début du transbordement de chaque wagon. Si la valeur est à -1, aucun transbordement n'est en cours.
+    wagonsBloques = {w: False for w in idWagons}                                # La valeur associée à chaque wagon passe à True lorsqu'ils sont dans l'attente d'être transbordés. Ne pas confondre les wagons en attente et les wagons en cours de transbordement.
+    attelages = {w: -1 for w in idWagons}                                       # Associe une motrice (valeur) à chaque wagon (clé). Si l'attelage est <0, le wagon n'est attelé à aucune motrice.
+    majAttelages = set()                                                        # Mises à jours à appliquer aux attelages à la fin du traitement de toutes les motrices
+
+    # Variables de gestion des requêtes et des missions
+    indicesMissionsActuelles = {m: 0 for m in idMotrices}                       # Indices des missions actuellement évaluées
+    indicesRequetesActuelles = {w: 0 for w in idWagons}                         # Indices des requêtes actuellement évaluées
+    debutMissionsActuelles = {m: 0 for m in idMotrices}                         # Instant de début des missions actuellement simulées
+
+
 
     def sol_to_ind(solution: Solution):
         donneesInd = [mission for missions in solution.values() for mission in missions]
@@ -437,24 +457,37 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         Les positions cibles des missions de Récupération sont déterminées dynamiquement à partir des positions des wagons.
         Une solution est une séquence de missions imposées à chaque motrice. Si un wagon arrive trop tôt dans son noeud de destination, il est mis en attente.
         """
-        # Variables de simulation        # TODO: éviter de tout redéclarer à chaque appel de évaluer_solution.
-        dernierNoeudMotrices = copy.deepcopy(probleme.motrices)
-        dernierNoeudWagons = copy.deepcopy(probleme.wagons)
-        prochainNoeudMotrices = copy.deepcopy(probleme.motrices)
-        prochainNoeudWagons = copy.deepcopy(probleme.wagons)
-        
-        debutAttenteMotrices = {m: -1 for m in idMotrices}                          # Instant de début de l'attente de chaque motrice. Si la valeur est à -1, la motrice n'est pas en attente.
-        debutTransbordements = {w: -1 for w in idWagons}                            # Instant de début du transbordement de chaque wagon. Si la valeur est à -1, aucun transbordement n'est en cours.
-        wagonsBloques = {w: False for w in idWagons}                                # La valeur associée à chaque wagon passe à True lorsqu'ils sont dans l'attente d'être transbordés. Ne pas confondre les wagons en attente et les wagons en cours de transbordement.
-        attelages = {w: -1 for w in idWagons}                                       # Associe une motrice (valeur) à chaque wagon (clé). Si l'attelage est <0, le wagon n'est attelé à aucune motrice.
-        majAttelages = set()                                                        # Mises à jours à appliquer aux attelages à la fin du traitement de toutes les motrices
+        def reset_dict(dictCible, dictSource):
+            dictCible.clear()
+            for k, v in dictSource.items():
+                dictCible[k] = copy.deepcopy(v)
 
-        # Variables de gestion des requêtes et des missions
-        indicesMissionsActuelles = {m: 0 for m in idMotrices}                       # Indices des missions actuellement évaluées
-        indicesRequetesActuelles = {w: 0 for w in idWagons}                         # Indices des requêtes actuellement évaluées
-        debutMissionsActuelles = {m: 0 for m in idMotrices}                         # Instant de début des missions actuellement simulées
+        # Réinitialisation des dict de motrices et wagons
+        reset_dict(dernierNoeudMotrices, probleme.motrices)
+        reset_dict(dernierNoeudWagons, probleme.wagons)
+        reset_dict(prochainNoeudMotrices, probleme.motrices)
+        reset_dict(prochainNoeudWagons, probleme.wagons)
 
-        # Objectifs
+        # Réinitialisation des autres variables
+        for m in debutAttenteMotrices:
+            debutAttenteMotrices[m] = -1
+        for w in debutTransbordements:
+            debutTransbordements[w] = -1
+        for w in wagonsBloques:
+            wagonsBloques[w] = False
+        for w in attelages:
+            attelages[w] = -1
+        majAttelages.clear()
+
+        for m in indicesMissionsActuelles:
+            indicesMissionsActuelles[m] = 0
+        for w in indicesRequetesActuelles:
+            indicesRequetesActuelles[w] = 0
+        for m in debutMissionsActuelles:
+            debutMissionsActuelles[m] = 0
+
+
+        # Déclaration des objectifs
         objCoutsRequetes = 0                                                        # Coût de l'avance et du retard sur les requêtes (à minimiser)
         objCoutsLogistiques = 0                                                     # Coût logistique total de la solution (à minimiser)
         
