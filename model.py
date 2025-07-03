@@ -24,7 +24,7 @@ def pause_and_exit():
     exit()
 
 
-class ConfigProbleme:
+class Config:
     def __init__(self) -> None:
         """
         noeudsGare: liste des noeuds du graphe correspondant à des gares, où les trains peuvent s'arrêter et déposer des wagons.
@@ -44,6 +44,8 @@ class ConfigProbleme:
         self.coutUnitaireAttelage = 1
         self.coutUnitaireDeplacement = 1
 
+class Probleme:
+    def __init__(self):
         self.graphe: Graph = None
         self.noeudsGare = []
         self.requetes = {}
@@ -104,7 +106,7 @@ class Requete:
 
 
 
-def initialiser_logs(config: ConfigProbleme):
+def initialiser_logs(config: Config):
     """
     Initialise les logs pour permettre leur écriture à la fois dans un console et dans un fichier.
     """
@@ -146,7 +148,7 @@ def initialiser_logs(config: ConfigProbleme):
             info(f"Suppression de {fichier}.")
 
 
-def terminer_programme(config: ConfigProbleme):
+def terminer_programme(config: Config):
     """
     Opérations à la fin du programme.
     """
@@ -155,30 +157,7 @@ def terminer_programme(config: ConfigProbleme):
 
 
 def charger_config(cheminFichierConfig: str):
-    def charger_graphe(dictGraphe: dict) -> Graph:
-        aretes = []
-        poids = []
-
-        for src, dsts in dictGraphe.items():        # Construction des arêtes
-            for dst, p in dsts.items():
-                aretes.append((src, dst))
-                poids.append(p)
-
-        noeuds = sorted(set([n for arete in aretes for n in arete]))            # Extraction de tous les noeuds utilisés
-        indexNoeuds = {noeud: id for id, noeud in enumerate(noeuds)}            # Création d'un mapping d'indices pour igraph
-        indexAretes = [(indexNoeuds[src], indexNoeuds[dst]) for src, dst in aretes]
-
-        g = Graph(directed=True)
-        g.add_vertices(len(noeuds))
-        g.add_edges(indexAretes)
-        g.es['weights'] = [int(p) for p in poids]       # Conversion des poids en entiers (les durées et instants sont des entiers naturels)
-        g.vs['name'] = [str(n) for n in noeuds]
-        g.vs['label'] = [str(n) for n in noeuds]
-
-        return g
-    
-
-    config = ConfigProbleme()
+    config = Config()
 
     with open(cheminFichierConfig, encoding='utf-8-sig') as fichier:
         try:
@@ -201,37 +180,6 @@ def charger_config(cheminFichierConfig: str):
             config.coutUnitaireRequetes = int(donnees['coutUnitaireRequetes'])
             config.coutUnitaireAttelage = int(donnees['coutUnitaireAttelage'])
             config.coutUnitaireDeplacement = int(donnees['coutUnitaireDeplacement'])
-
-
-            # Lecture du graphe
-            dictGraphe = {int(k): {int(t): float(w) for t, w in v.items()} for k, v in donnees["graphe"].items()}
-            config.graphe = charger_graphe(dictGraphe)
-
-            # Lecture des noeuds gare
-            if not (donnees['noeudsGare'] is None):
-                config.noeudsGare = [int(n) for n in donnees['noeudsGare']]
-
-            # Lecture des requêtes
-            if not (donnees['requetes'] is None):
-                config.requetes = {
-                    w: [Requete(*r) for r in listeRequetes]
-                    for w, listeRequetes in donnees['requetes'].items()
-                }
-
-            # Lecture des motrices
-            if not (donnees['motrices'] is None):
-                config.motrices = dict(zip([int(k) for k in list(donnees['motrices'].keys())], [int(v) for v in list(donnees['motrices'].values())]))
-
-            # Lecture des wagons
-            if not (donnees['wagons'] is None):
-                config.wagons = dict(zip([int(k) for k in list(donnees['wagons'].keys())], [int(v) for v in list(donnees['wagons'].values())]))
-
-            # Vérifications supplémentaires
-            # Vérifie que tous les wagons soient présents dans les requêtes
-            for w in config.wagons.keys():
-                if not w in config.requetes.keys():
-                    config.requetes[w] = []             # Initialisation des requêtes avec une liste vide
-
         except KeyError as exc:
             error(f"{exc.args[0]} est absent de la configuration.")
             pause_and_exit()
@@ -239,11 +187,79 @@ def charger_config(cheminFichierConfig: str):
         return config
     
 
-def resoudre_probleme(config: ConfigProbleme):
-    idMotrices = list(config.motrices.keys())
-    idWagons = list(config.wagons.keys())
-    dernierInstantDebutRequete = max([v.tempsDebut for l in config.requetes.values() for v in l])
+def charger_probleme(cheminFichierProbleme: str):
+    def charger_graphe(dictGraphe: dict) -> Graph:
+        aretes = []
+        poids = []
 
+        for src, dsts in dictGraphe.items():        # Construction des arêtes
+            for dst, p in dsts.items():
+                aretes.append((src, dst))
+                poids.append(p)
+
+        noeuds = sorted(set([n for arete in aretes for n in arete]))            # Extraction de tous les noeuds utilisés
+        indexNoeuds = {noeud: id for id, noeud in enumerate(noeuds)}            # Création d'un mapping d'indices pour igraph
+        indexAretes = [(indexNoeuds[src], indexNoeuds[dst]) for src, dst in aretes]
+
+        g = Graph(directed=True)
+        g.add_vertices(len(noeuds))
+        g.add_edges(indexAretes)
+        g.es['weights'] = [int(p) for p in poids]       # Conversion des poids en entiers (les durées et instants sont des entiers naturels)
+        g.vs['name'] = [str(n) for n in noeuds]
+        g.vs['label'] = [str(n) for n in noeuds]
+
+        return g
+    
+    # Construction du problème
+    probleme = Probleme()
+
+    with open(cheminFichierProbleme, encoding='utf-8-sig') as fichier:
+        try:
+            donnees = yaml.safe_load(fichier)
+        except yaml.YAMLError as exc:
+            error(exc)
+            pause_and_exit()
+
+        try:
+            # Lecture du graphe
+            dictGraphe = {int(k): {int(t): float(w) for t, w in v.items()} for k, v in donnees["graphe"].items()}
+            probleme.graphe = charger_graphe(dictGraphe)
+
+            # Lecture des noeuds gare
+            if not (donnees['noeudsGare'] is None):
+                probleme.noeudsGare = [int(n) for n in donnees['noeudsGare']]
+
+            # Lecture des requêtes
+            if not (donnees['requetes'] is None):
+                probleme.requetes = {
+                    w: [Requete(*r) for r in listeRequetes]
+                    for w, listeRequetes in donnees['requetes'].items()
+                }
+
+            # Lecture des motrices
+            if not (donnees['motrices'] is None):
+                probleme.motrices = dict(zip([int(k) for k in list(donnees['motrices'].keys())], [int(v) for v in list(donnees['motrices'].values())]))
+
+            # Lecture des wagons
+            if not (donnees['wagons'] is None):
+                probleme.wagons = dict(zip([int(k) for k in list(donnees['wagons'].keys())], [int(v) for v in list(donnees['wagons'].values())]))
+
+            # Vérifications supplémentaires
+            # Vérifie que tous les wagons soient présents dans les requêtes
+            for w in probleme.wagons.keys():
+                if not w in probleme.requetes.keys():
+                    probleme.requetes[w] = []             # Initialisation des requêtes avec une liste vide
+
+        except KeyError as exc:
+            error(f"{exc.args[0]} est absent du problème.")
+            pause_and_exit()
+
+        return probleme
+    
+
+def resoudre_probleme(config: Config, probleme: Probleme):
+    idMotrices = list(probleme.motrices.keys())
+    idWagons = list(probleme.wagons.keys())
 
     def sol_to_ind(solution: Solution):
         donneesInd = [mission for missions in solution.values() for mission in missions]
@@ -297,7 +313,7 @@ def resoudre_probleme(config: ConfigProbleme):
                         continue 
                     wagonsAtteles[w] = False                    # Sinon, on met à jour l'attelage et on vérifie d'autres éléments relatifs à la mission
                     noeudMission = mission.noeud
-                    noeudRequete = config.requetes[w][indicesRequetesValidees[w]].noeud if indicesRequetesValidees[w] < len(config.requetes[w]) else -1
+                    noeudRequete = probleme.requetes[w][indicesRequetesValidees[w]].noeud if indicesRequetesValidees[w] < len(probleme.requetes[w]) else -1
                     
                     # Si la mission valide la requête (noeudMission == noeudRequete) alors on avance l'indice de requêtes validées
                     if noeudRequete != -1 and noeudMission == noeudRequete:
@@ -325,14 +341,14 @@ def resoudre_probleme(config: ConfigProbleme):
             for w, b in wagonsAtteles.items():
                 if not b:       # Si le wagon n'est pas attelé à cette motrice à la fin de la simulation, on passe au suivant
                     continue
-                noeudDepose = random.choice(config.noeudsGare)
+                noeudDepose = random.choice(probleme.noeudsGare)
                 sol[m].append(Mission(TypeMission.Deposer, w, noeudDepose))
 
 
         # Pour chaque requête non vérifiée, ajout des missions sur une motrice au hasard
         for w in idWagons:
-            while indicesRequetesValidees[w] < len(config.requetes[w]):
-                requete = config.requetes[w][indicesRequetesValidees[w]]
+            while indicesRequetesValidees[w] < len(probleme.requetes[w]):
+                requete = probleme.requetes[w][indicesRequetesValidees[w]]
                 noeudRequete = requete.noeud
                 m = random.choice(idMotrices)
 
@@ -362,9 +378,9 @@ def resoudre_probleme(config: ConfigProbleme):
             subOp = random.choice([-1, 0, +1])      # Sélection d'une sous-opération, avec l'insertion d'une mission Ajout, Attendre (avec durée unitaire) ou Récupérer.
             mission = None
             if subOp == -1:
-                mission = Mission(TypeMission.Deposer, wagon, random.choice(config.noeudsGare))
+                mission = Mission(TypeMission.Deposer, wagon, random.choice(probleme.noeudsGare))
             elif subOp == 0:
-                mission = Mission(TypeMission.Attendre, wagon, random.choice(config.noeudsGare))
+                mission = Mission(TypeMission.Attendre, wagon, random.choice(probleme.noeudsGare))
                 mission.duree = 1
             else:       # subOp == +1
                 mission = Mission(TypeMission.Recuperer, wagon, -1)
@@ -421,18 +437,19 @@ def resoudre_probleme(config: ConfigProbleme):
         Les positions cibles des missions de Récupération sont déterminées dynamiquement à partir des positions des wagons.
         Une solution est une séquence de missions imposées à chaque motrice. Si un wagon arrive trop tôt dans son noeud de destination, il est mis en attente.
         """
-        # Variable de simulation        # TODO: éviter de tout redéclarer à chaque appel de évaluer_solution.
-        dernierNoeudMotrices = copy.deepcopy(config.motrices)
-        dernierNoeudWagons = copy.deepcopy(config.wagons)
-        prochainNoeudMotrices = copy.deepcopy(config.motrices)
-        prochainNoeudWagons = copy.deepcopy(config.wagons)
+        # Variables de simulation        # TODO: éviter de tout redéclarer à chaque appel de évaluer_solution.
+        dernierNoeudMotrices = copy.deepcopy(probleme.motrices)
+        dernierNoeudWagons = copy.deepcopy(probleme.wagons)
+        prochainNoeudMotrices = copy.deepcopy(probleme.motrices)
+        prochainNoeudWagons = copy.deepcopy(probleme.wagons)
         
         debutAttenteMotrices = {m: -1 for m in idMotrices}                          # Instant de début de l'attente de chaque motrice. Si la valeur est à -1, la motrice n'est pas en attente.
-        attelages = {w: -1 for w in idWagons}                                       # Associe une motrice (valeur) à chaque wagon (clé). Si l'attelage est <0, le wagon n'est attelé à aucune motrice.
         debutTransbordements = {w: -1 for w in idWagons}                            # Instant de début du transbordement de chaque wagon. Si la valeur est à -1, aucun transbordement n'est en cours.
-        wagonsEnAttente = {w: False for w in idWagons}                              # La valeur associée à chaque wagon passe à True lorsqu'ils sont dans l'attente d'être transbordés. Ne pas confondre les wagons en attente et les wagons en cours de transbordement.
+        wagonsBloques = {w: False for w in idWagons}                                # La valeur associée à chaque wagon passe à True lorsqu'ils sont dans l'attente d'être transbordés. Ne pas confondre les wagons en attente et les wagons en cours de transbordement.
+        attelages = {w: -1 for w in idWagons}                                       # Associe une motrice (valeur) à chaque wagon (clé). Si l'attelage est <0, le wagon n'est attelé à aucune motrice.
+        majAttelages = set()                                                        # Mises à jours à appliquer aux attelages à la fin du traitement de toutes les motrices
 
-        # Variable de gestion des requêtes et des missions
+        # Variables de gestion des requêtes et des missions
         indicesMissionsActuelles = {m: 0 for m in idMotrices}                       # Indices des missions actuellement évaluées
         indicesRequetesActuelles = {w: 0 for w in idWagons}                         # Indices des requêtes actuellement évaluées
         debutMissionsActuelles = {m: 0 for m in idMotrices}                         # Instant de début des missions actuellement simulées
@@ -444,7 +461,7 @@ def resoudre_probleme(config: ConfigProbleme):
         # Boucle principale: simulation de la solution instant par instant
         t = -1      # Garantit que t=0 à la première itération
         nbMissionsTotal = sum([len(l) for l in sol.values()])
-        nbRequetesTotal = sum([len(l) for l in config.requetes.values()])
+        nbRequetesTotal = sum([len(l) for l in probleme.requetes.values()])
         nbMissionsEvalues = 0
         nbRequetesEvaluees = 0
         while (nbMissionsEvalues < nbMissionsTotal or nbRequetesEvaluees < nbRequetesTotal):
@@ -473,7 +490,7 @@ def resoudre_probleme(config: ConfigProbleme):
                     prochainNoeudWagons[w] = arrivee
 
                 # Calcul du temps de parcours restant jusqu'au noeud d'arrivée
-                tempsParcours = int(config.graphe.distances(depart, arrivee, weights='weights')[0][0])
+                tempsParcours = int(probleme.graphe.distances(depart, arrivee, weights='weights')[0][0])
                 tempsParcoursRestant = tempsParcours - (t - debutMissionsActuelles[m])
 
 
@@ -496,18 +513,18 @@ def resoudre_probleme(config: ConfigProbleme):
                 
                 # Mission Récupérer
                 if (missionActuelle.typeMission == TypeMission.Recuperer):      # Si le wagon n'est pas attelé à une autre motrice ou est déjà attelé, la mission peut être validée
-                    wagonEstDisponible = attelages[wagonMission] < 0 and (not wagonsEnAttente[wagonMission]) and debutTransbordements[wagonMission] < 0     # Vérifie que le wagon ne subit aucune opération
+                    wagonEstDisponible = attelages[wagonMission] < 0 and (not wagonsBloques[wagonMission]) and debutTransbordements[wagonMission] < 0     # Vérifie que le wagon ne subit aucune opération
                     if wagonEstDisponible or attelages[wagonMission] == m:      # Si la solution a bien été réparée, la deuxième condition n'est pas nécessaire
-                        attelages[wagonMission] = m
+                        majAttelages.add((wagonMission, m))                     # Ajout de l'attelage
                         objCoutsLogistiques += config.coutUnitaireAttelage
                         missionValidee = True
                 # Mission Déposer
                 elif missionActuelle.typeMission == TypeMission.Deposer:
                     if attelages[wagonMission] == m:
-                        attelages[wagonMission] = -1                    # Suppression de l'attelage
+                        majAttelages.add((wagonMission, -1))                    # Suppression de l'attelage           
                         objCoutsLogistiques += config.coutUnitaireAttelage
-                    missionValidee = True                               # La mission est validée dans tous les cas (même si le wagon n'est pas attelé à la motrice)
-                # Mission Déposer
+                    missionValidee = True           # La mission est validée dans tous les cas (même si le wagon n'est pas attelé à la motrice)
+                # Mission Attendre
                 elif missionActuelle.typeMission == TypeMission.Attendre:
                     if debutAttenteMotrices[m] < 0:                     # Mise en attente de la motrice
                         debutAttenteMotrices[m] = t
@@ -515,36 +532,42 @@ def resoudre_probleme(config: ConfigProbleme):
                         missionValidee = True
                         debutAttenteMotrices[m] = -1                    # Remise à 0 du compteur
 
-                # Si la mission a pu être validée, on passe à la suivante
+                # Si la mission a pu être validée, on passe à la suivante. Si, la mission actuelle sera réevaluée au prochain instant (dans le cas d'une mise en attente, par exemple).
                 if missionValidee:
                     debutMissionsActuelles[m] = t
                     indicesMissionsActuelles[m] += 1
                     nbMissionsEvalues += 1
                     
+            # ---------------------------------------------------------
+            # Mise à jour des attelages
+            # ---------------------------------------------------------
+            for a in majAttelages:      # La mise à jour de l'attelage est réalisée après le traitement de toutes les motrices (pour éviter la reprise immédiate du wagon)
+                attelages[a[0]] = a[1]
+            majAttelages.clear()
 
             # ---------------------------------------------------------
             # Mise à jour des wagons et requêtes
             # ---------------------------------------------------------
             for w in idWagons:
-                if indicesRequetesActuelles[w] >= len(config.requetes[w]):
+                if indicesRequetesActuelles[w] >= len(probleme.requetes[w]):
                     continue
 
                 # Vérifie que le wagon soit arrivé à destination et ne soit plus attelé pour commencer le transbordement. Lorsque le transbordement est terminé, la requête est validée.
-                requete = config.requetes[w][indicesRequetesActuelles[w]]
+                requete = probleme.requetes[w][indicesRequetesActuelles[w]]
                 if dernierNoeudWagons[w] != requete.noeud or attelages[w] >= 0:
                     continue
 
                 # Si le wagon est en avance, il est placé en attente de transbordement
                 if t < requete.tempsDebut:
-                    wagonsEnAttente[w] = True               # Blocage du wagon en avance
+                    wagonsBloques[w] = True               # Blocage du wagon en avance
                     objCoutsRequetes += config.coutUnitaireRequetes                   # Application d'une pénalité d'avance
                     continue
                 else:
-                    wagonsEnAttente[w] = False              # Déblocage du wagon
+                    wagonsBloques[w] = False              # Déblocage du wagon
 
                 # Début du transbordement
-                if debutTransbordements[w] < 0:            # Si le transbordement n'a pas commencé pour ce wagon
-                    debutTransbordements[w] = t
+                if debutTransbordements[w] < 0:           # Si le transbordement n'a pas commencé pour ce wagon
+                    debutTransbordements[w] = t           # Alors on l'initialise
                 
                 # Fin du transbordement et validation de la requête
                 if t - debutTransbordements[w] >= requete.dureeTransbordement:
@@ -557,7 +580,7 @@ def resoudre_probleme(config: ConfigProbleme):
 
 
     # Initialisation de l'algorithme génétique
-    creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))     # TODO: configurer les poids
+    creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))
     creator.create("Individual", list, fitness=creator.FitnessMin)
 
     toolbox = base.Toolbox()
@@ -612,8 +635,8 @@ def resoudre_probleme(config: ConfigProbleme):
     meilleureSol = ind_to_sol(meilleurInd) 
     return meilleureSol
 
-def afficher_solution(sol: Solution, config: ConfigProbleme):
-    idMotrices = config.motrices.keys()
+def afficher_solution(sol: Solution, config: Config, probleme: Probleme):
+    idMotrices = probleme.motrices.keys()
     
     info("--------------------------------------------------------")
     info("AFFICHAGE DE LA SOLUTION")
@@ -626,34 +649,41 @@ def afficher_solution(sol: Solution, config: ConfigProbleme):
             info(" - []")
         
 
-    layout = config.graphe.layout('kk')     # TODO: terminer (pour le moment, seulement affichage du problème)
+    layout = probleme.graphe.layout('kk')     # TODO: terminer (pour le moment, seulement affichage du problème)
     fig, ax = plt.subplots()
     igraph.plot(
-        config.graphe,
+        probleme.graphe,
         target=ax,
         layout=layout,
         vertex_size=30,
         vertex_color="lightblue",
-        vertex_label=config.graphe.vs['label'],
+        vertex_label=probleme.graphe.vs['label'],
         edge_arrow_size=0.5
     )
     plt.show()
     pass # TODO: afficher l'évolution de la solution
                 
+
+
 def main():
     # Initialisation de Tkinter (sans interface graphique)
     root = tk.Tk()
     root.withdraw()
     
-    # Chargement de la configuration du problème et des logs. Les erreurs lors du chargement de la config n'apparaissent pas dans les logs.
-    chemierFichierConfig = filedialog.askopenfilename(filetypes=[("Fichiers YAML", ".yaml")], initialdir='.', title="Sélectionnez le fichier contenant la configuration du problème.")
+    # Chargement de la configuration. Les erreurs lors du chargement de la config n'apparaissent pas dans les logs.
+    chemierFichierConfig = filedialog.askopenfilename(filetypes=[("Fichiers YAML", ".yaml")], initialdir='.', title="Sélectionnez le fichier contenant la configuration.")
     if len(chemierFichierConfig) == 0: return                   # Arrêt du programme si aucun fichier n'a été sélectionné
     config = charger_config(chemierFichierConfig)
     initialiser_logs(config)
 
+    # Chargement du problème
+    cheminFichierProbleme = filedialog.askopenfilename(filetypes=[("Fichiers YAML", ".yaml")], initialdir='.', title="Sélectionnez le fichier contenant le problème.")
+    if len(cheminFichierProbleme) == 0: return                   # Arrêt du programme si aucun fichier n'a été sélectionné
+    probleme = charger_probleme(cheminFichierProbleme)
+
     # Résolution du problème
-    sol = resoudre_probleme(config)
-    afficher_solution(sol, config)
+    sol = resoudre_probleme(config, probleme)
+    afficher_solution(sol, config, probleme)
 
     # Fin du programme
     terminer_programme(config)
