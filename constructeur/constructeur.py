@@ -24,7 +24,7 @@ def extract_linestring_points(geo_shape_str):
 df['lines'] = df['Geo Shape'].apply(extract_linestring_points)
 
 # Arrondi des points pour simplifier le graphe
-def round_point(p, precision=5):
+def round_point(p, precision=10):
     return (round(p[0], precision), round(p[1], precision))
 
 # Construction du graphe
@@ -34,40 +34,45 @@ for _, row in df.iterrows():
     vMax = row['V_MAX']
     if pd.isna(vMax):
         vMax = vitesseParDefaut
+
+    # Construction des arêtes
     for i in range(len(line) - 1):
-        p1 = round_point(line[i])
-        p2 = round_point(line[i+1])
+        p1 = line[i]
+        p2 = line[i+1]
         if p1 != p2:
             dist = geodesic(p1, p2).meters
             weight = dist / vMax
             G.add_edge(p1, p2, weight=weight)
 
+    # Raccordement des extrémités
+
 
 def simplify_graph(G):
     G_simplified = G.copy()
-    to_remove = []
+    noeudsASupprimer = []
 
-    for node in list(G.nodes):
-        neighbors = list(G_simplified.neighbors(node))
-        if len(neighbors) == 2:
-            n1, n2 = neighbors
-            if G_simplified.has_edge(n1, n2):
-                continue  # Éviter les doublons
+    for i in range(20):
+        for node in list(G_simplified.nodes):
+            neighbors = list(G_simplified.neighbors(node))
+            if len(neighbors) == 2:
+                n1, n2 = neighbors
+                if G_simplified.has_edge(n1, n2):
+                    continue  # Éviter les doublons
 
-            # Récupération des poids et calcul du poids total 
-            data1 = G_simplified.get_edge_data(node, n1)
-            data2 = G_simplified.get_edge_data(node, n2)
-            poidsTotal = data1['weight'] + data2['weight']
+                # Récupération des poids et calcul du poids total 
+                data1 = G_simplified.get_edge_data(node, n1)
+                data2 = G_simplified.get_edge_data(node, n2)
+                poidsTotal = data1['weight'] + data2['weight']
 
-            # Fusion des arêtes
-            G_simplified.add_edge(n1, n2, weight=poidsTotal)
-            to_remove.append(node)
+                # Fusion des arêtes
+                G_simplified.add_edge(n1, n2, weight=poidsTotal)
+                noeudsASupprimer.append(node)
 
-    G_simplified.remove_nodes_from(to_remove)
+        G_simplified.remove_nodes_from(noeudsASupprimer)
     return G_simplified
 
 # Application de la simplification
-G_simplified = simplify_graph(G)
+G_simplified = G    #simplify_graph(G)
 
 # Visualisation du graphe simplifié
 pos = {node: (node[1], node[0]) for node in G_simplified.nodes}
