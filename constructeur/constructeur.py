@@ -5,14 +5,22 @@ from geopy.distance import geodesic
 import matplotlib.pyplot as plt
 from scipy.spatial import KDTree
 import numpy as np
+import sys
+import folium
 
-def extraire_points(chaineGeoJson):
+def extraire_lignes(chaineGeoJson):
     try:
         geojson = json.loads(chaineGeoJson)
-        coords = geojson['coordinates']
-        return [(lat, lon) for lon, lat in coords]
+        if geojson['type'] == 'LineString':
+            return [geojson['coordinates']]
+        elif geojson['type'] == 'MultiLineString':
+            return geojson['coordinates']
+        else:
+            return []
     except:
         return []
+
+
 
 def arrondir_point(point, precision=10):
     return (round(point[0], precision), round(point[1], precision))
@@ -23,7 +31,14 @@ def convertir_latlon_xy(lat, lon):
     y = rayonTerre * np.radians(lat)
     return (x, y)
 
-def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, eviterNoeudsConnectes=False):
+def longueur_chemin_graphe_safe(graphe, source, target):
+    try:
+        longueur = nx.shortest_path_length(graphe, source=source, target=target)
+        return longueur
+    except nx.NetworkXNoPath as e:
+        return sys.maxsize          # Retourne une très grande valeur
+    
+def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, eviterNoeudsAccessible=False, limiteAccessibilite=20):
     x, y = convertir_latlon_xy(noeud[0], noeud[1])
     indices = arbreKd.query_ball_point([x, y], r=rayon)
 
@@ -34,8 +49,8 @@ def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, eviterNoeudsConnectes=Fa
         voisin = correspondanceXYNoeud[voisinXY]
         if voisin == noeud:
             continue
-        if eviterNoeudsConnectes and (graphe.has_edge(noeud, voisin) or voisin == noeud):
-            continue
+        if eviterNoeudsAccessible and (graphe.has_edge(noeud, voisin) or voisin == noeud or longueur_chemin_graphe_safe(graphe, noeud, voisin) < limiteAccessibilite):
+            continue            # Si un arête est déjà présente, le voisin est le noeud, ou le voisin est déjà accessible en un nombre d'arêtes limité, alors le voisin n'est pas éligible au raccordement. 
         dist = geodesic(noeud, voisin).meters
         if dist < distanceMinimale:
             noeudPlusProche = voisin
@@ -84,34 +99,55 @@ def fusionner_clusters(graphe, rayonFusion):
 
     return graphe
 
+def est_dans_zone(point, latMin, latMax, lonMin, lonMax):
+    lat, lon = point
+    return latMin <= lat <= latMax and lonMin <= lon <= lonMax
 
 
 
 # Paramètres
 vitesseParDefaut = 100
-rayonRaccordements = 50
-cheminFichier = 'constructeur/données/vitesse-maximale-nominale-sur-ligne.csv'
+rayonRaccordements = 400
+cheminFichier = 'constructeur/données/données.csv'
+#lonMin = -4.70
+#lonMax = -1.169
+#latMin = 46.68
+#latMax = 49.00
+lonMin = -90
+lonMax = 90
+latMin = -90
+latMax = 90
 
 # Chargement des données
 df = pd.read_csv(cheminFichier, sep=';')
 df['V_MAX'] = pd.to_numeric(df['V_MAX'], errors='coerce')
-df['POINTS'] = df['Geo Shape'].apply(extraire_points)
 
 # Construction du graphe brut
 graphe = nx.Graph()
+segments = []
+libellesSegments = []
 for _, ligne in df.iterrows():
-    points = ligne['POINTS']
+    # Extraction de la vitesse
     vMax = ligne['V_MAX']
     if pd.isna(vMax):
         vMax = vitesseParDefaut
 
-    for i in range(len(points) - 1):
-        p1 = points[i]
-        p2 = points[i + 1]
-        if p1 != p2:
-            dist = geodesic(p1, p2).meters
-            poids = dist / vMax
-            graphe.add_edge(p1, p2, weight=poids)
+    # Extraction et ajout des segments
+    lignes = extraire_lignes(ligne['Geo Shape'])
+    for lignesCoords in lignes:
+        segment = [(lat, lon) for lon, lat in lignesCoords]
+        segments.append(segment)
+        libellesSegments.append(ligne['LIB_LIGNE'] + f' ({int(vMax)} km/h)')
+
+        for i in range(len(segment) - 1):
+            p1 = segment[i]
+            p2 = segment[i + 1]
+            if not (est_dans_zone(p1, latMin, latMax, lonMin, lonMax) or est_dans_zone(p2, latMin, latMax, lonMin, lonMax)):
+                continue
+            if p1 != p2:
+                dist = geodesic(p1, p2).kilometers
+                poids = (dist / vMax) * 60      # Temps de parcours estimé en minutes
+                graphe.add_edge(p1, p2, weight=poids)
 
 # Construction du KDTree
 correspondanceXYNoeud = {}
@@ -125,20 +161,19 @@ for noeud in graphe.nodes:
 arbreKd = KDTree(noeudsXY)
 
 # Raccordement des extrémités
-for _, ligne in df.iterrows():
-    points = ligne['POINTS']
-    if len(points) < 2:
+for segment in segments:
+    if len(segment) < 2:
         continue
-    for extremite in [points[0], points[-1]]:
-        if len(list(graphe.neighbors(extremite))) > 1:
+    for extremite in [segment[0], segment[-1]]:
+        if not est_dans_zone(extremite, latMin, latMax, lonMin, lonMax) or len(list(graphe.neighbors(extremite))) > 1:
             continue            # Si un raccordement a déjà été effectué, on ne traite pas cette extrémité
-        noeudProche, dist = trouver_noeud_proche(graphe, arbreKd, extremite, rayonRaccordements, eviterNoeudsConnectes=True)
+        noeudProche, dist = trouver_noeud_proche(graphe, arbreKd, extremite, rayonRaccordements, eviterNoeudsAccessible=True)
         if noeudProche:
             graphe.add_edge(extremite, noeudProche, weight=0)
 
 
 
-def simplifier_graphe(G, iter=20):
+def simplifier_graphe(G, iter=100):
     grapheSimplifie = G.copy()
     noeudsASupprimer = []
 
@@ -163,17 +198,53 @@ def simplifier_graphe(G, iter=20):
     return grapheSimplifie
 
 # Application des simplifications
-#grapheSimplifie = fusionner_clusters(graphe, 1000)
-#grapheSimplifie = simplifier_graphe(graphe)
-grapheSimplifie = graphe
+grapheSimplifie = simplifier_graphe(graphe)
+grapheSimplifie = fusionner_clusters(grapheSimplifie, 1000)
+#grapheSimplifie = graphe
 
-# Visualisation du graphe simplifié
+
+# ------------------------------------------
+# Visualisation (utile si le graphe est trop gros)
+# ------------------------------------------
 pos = {node: (node[1], node[0]) for node in grapheSimplifie.nodes}
 plt.figure(figsize=(10, 8))
-nx.draw(grapheSimplifie, pos, node_size=2, edge_color='blue', with_labels=False)
+nx.draw(grapheSimplifie, pos, node_size=2, edge_color='black', with_labels=False)
 plt.title("Graphe simplifié (topologie réduite)")
 plt.xlabel("Longitude")
 plt.ylabel("Latitude")
 plt.grid(True)
 plt.axis('equal')
 plt.show()
+
+
+
+# ------------------------------------------
+# Création de la carte Folium
+# ------------------------------------------
+map = folium.Map(location=[46.5, 2.5], zoom_start=6, tiles="OpenStreetMap")
+
+# Ajout des segments
+for s in range(len(segments)):
+    segment = segments[s]
+    folium.PolyLine(
+        segment,
+        color="blue",
+        weight=2,
+        opacity=0.2,
+        tooltip=libellesSegments[s]
+    ).add_to(map)
+
+
+# Ajout du graphe simplifié
+for u, v, data in grapheSimplifie.edges(data=True):
+    coords = [(u[0], u[1]), (v[0], v[1])]  # (lat, lon)
+    folium.PolyLine(
+        coords,
+        color="red",
+        weight=2,
+        opacity=0.6,
+        tooltip=f"Temps de parcours: {round(data['weight'], 2)} min"
+    ).add_to(map)
+
+# Sauvegarder la carte
+map.save("graphe_ferroviaire.html")

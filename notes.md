@@ -1,5 +1,7 @@
 ## TODO
-- Créer le constructeur, permettant de générer des instances du problème à partir du réseau SNCF.
+- Ajouter des paramètres sur la vitesse adoptée spécifiquement par les trains de frets sur le réseau/les portions autorisées (par exemple, interdiction de rouler sur les LGV). --> Notamment, ne pas importer les lignes et raccordements avec des vitesses trop élevées
+- Considérer les gares et les sites de triages comme des noeuds à ne pas supprimer. Les matérialiser d'une manière spécifique dans le graphe.
+
 - Considérer le nombre de motrices utilisées dans le problème comme un coût logistique fixe.
 - Intégrer les contraintes de blocage du réseau à des instants donnés. Ces constraintes pourraient s'interpréter comme: si le train souhaite passer par un tronçon à l'instant t, alors son trajet est allongé d'une durée d (la durée modélisant le fait qu'on laisse passer d'autres trains devant). La principale difficulté réside dans le fait que, dans la simulation, on ne sait quel chemin a emprunté une motrice qu'une fois qu'elle arrive à destination. A voir si la poursuite dynamique des wagons reste la meilleure approche.
 - Considérer le fait que l'attelage de wagon est LIFO. Augmenter les coûts logistique si le LIFO n'est pas respecté.
