@@ -3,81 +3,174 @@ import networkx as nx
 import json
 from geopy.distance import geodesic
 import matplotlib.pyplot as plt
+from scipy.spatial import KDTree
+import numpy as np
 
-# Paramètres
-vitesseParDefaut = 100
-chemin = 'constructeur/données/vitesse-maximale-nominale-sur-ligne.csv'
-
-# Chargement des données
-df = pd.read_csv(chemin, sep=';')
-df['V_MAX'] = pd.to_numeric(df['V_MAX'], errors='coerce')       # Conversion de V_MAX en nombre
-
-# Extraction des points depuis Geo Shape
-def extract_linestring_points(geo_shape_str):
+def extraire_points(chaineGeoJson):
     try:
-        geojson = json.loads(geo_shape_str)
+        geojson = json.loads(chaineGeoJson)
         coords = geojson['coordinates']
         return [(lat, lon) for lon, lat in coords]
     except:
         return []
 
-df['lines'] = df['Geo Shape'].apply(extract_linestring_points)
+def arrondir_point(point, precision=10):
+    return (round(point[0], precision), round(point[1], precision))
 
-# Arrondi des points pour simplifier le graphe
-def round_point(p, precision=10):
-    return (round(p[0], precision), round(p[1], precision))
+def convertir_latlon_xy(lat, lon):
+    rayonTerre = 6371000  # mètres
+    x = rayonTerre * np.radians(lon) * np.cos(np.radians(lat))
+    y = rayonTerre * np.radians(lat)
+    return (x, y)
 
-# Construction du graphe
-G = nx.Graph()
-for _, row in df.iterrows():
-    line = row['lines']
-    vMax = row['V_MAX']
+def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, eviterNoeudsConnectes=False):
+    x, y = convertir_latlon_xy(noeud[0], noeud[1])
+    indices = arbreKd.query_ball_point([x, y], r=rayon)
+
+    noeudPlusProche = None
+    distanceMinimale = float('inf')
+    for idx in indices:
+        voisinXY = noeudsXY[idx]
+        voisin = correspondanceXYNoeud[voisinXY]
+        if voisin == noeud:
+            continue
+        if eviterNoeudsConnectes and (graphe.has_edge(noeud, voisin) or voisin == noeud):
+            continue
+        dist = geodesic(noeud, voisin).meters
+        if dist < distanceMinimale:
+            noeudPlusProche = voisin
+            distanceMinimale = dist
+    return noeudPlusProche, distanceMinimale
+
+def fusionner_clusters(graphe, rayonFusion):
+
+    def calculer_barycentre(points):
+        lats = [p[0] for p in points]
+        lons = [p[1] for p in points]
+        return (sum(lats) / len(lats), sum(lons) / len(lons))
+
+    noeuds = list(graphe.nodes)
+    coordXY = [convertir_latlon_xy(lat, lon) for lat, lon in noeuds]
+    arbre = KDTree(coordXY)
+
+    visités = set()
+    remplacements = []
+
+    for i, noeud in enumerate(noeuds):
+        if noeud in visités:
+            continue
+
+        voisins = arbre.query_ball_point(coordXY[i], r=rayonFusion)
+        cluster = [noeuds[j] for j in voisins if noeuds[j] not in visités]
+
+        if len(cluster) <= 1:
+            continue
+
+        visités.update(cluster)
+        pointFusion = calculer_barycentre(cluster)
+        remplacements.append((cluster, pointFusion))
+
+    for anciensNoeuds, nouveauNoeud in remplacements:
+        voisinsExternes = set()
+        for n in anciensNoeuds:
+            voisins = list(graphe.neighbors(n))
+            for v in voisins:
+                if v not in anciensNoeuds:
+                    poids = graphe[n][v]['weight']
+                    voisinsExternes.add((v, poids))
+        graphe.remove_nodes_from(anciensNoeuds)
+        for v, poids in voisinsExternes:
+            graphe.add_edge(nouveauNoeud, v, weight=poids)
+
+    return graphe
+
+
+
+
+# Paramètres
+vitesseParDefaut = 100
+rayonRaccordements = 50
+cheminFichier = 'constructeur/données/vitesse-maximale-nominale-sur-ligne.csv'
+
+# Chargement des données
+df = pd.read_csv(cheminFichier, sep=';')
+df['V_MAX'] = pd.to_numeric(df['V_MAX'], errors='coerce')
+df['POINTS'] = df['Geo Shape'].apply(extraire_points)
+
+# Construction du graphe brut
+graphe = nx.Graph()
+for _, ligne in df.iterrows():
+    points = ligne['POINTS']
+    vMax = ligne['V_MAX']
     if pd.isna(vMax):
         vMax = vitesseParDefaut
 
-    # Construction des arêtes
-    for i in range(len(line) - 1):
-        p1 = line[i]
-        p2 = line[i+1]
+    for i in range(len(points) - 1):
+        p1 = points[i]
+        p2 = points[i + 1]
         if p1 != p2:
             dist = geodesic(p1, p2).meters
-            weight = dist / vMax
-            G.add_edge(p1, p2, weight=weight)
+            poids = dist / vMax
+            graphe.add_edge(p1, p2, weight=poids)
 
-    # Raccordement des extrémités
+# Construction du KDTree
+correspondanceXYNoeud = {}
+noeudsXY = []
+
+for noeud in graphe.nodes:
+    x, y = convertir_latlon_xy(noeud[0], noeud[1])
+    noeudsXY.append((x, y))
+    correspondanceXYNoeud[(x, y)] = noeud
+
+arbreKd = KDTree(noeudsXY)
+
+# Raccordement des extrémités
+for _, ligne in df.iterrows():
+    points = ligne['POINTS']
+    if len(points) < 2:
+        continue
+    for extremite in [points[0], points[-1]]:
+        if len(list(graphe.neighbors(extremite))) > 1:
+            continue            # Si un raccordement a déjà été effectué, on ne traite pas cette extrémité
+        noeudProche, dist = trouver_noeud_proche(graphe, arbreKd, extremite, rayonRaccordements, eviterNoeudsConnectes=True)
+        if noeudProche:
+            graphe.add_edge(extremite, noeudProche, weight=0)
 
 
-def simplify_graph(G):
-    G_simplified = G.copy()
+
+def simplifier_graphe(G, iter=20):
+    grapheSimplifie = G.copy()
     noeudsASupprimer = []
 
-    for i in range(20):
-        for node in list(G_simplified.nodes):
-            neighbors = list(G_simplified.neighbors(node))
-            if len(neighbors) == 2:
-                n1, n2 = neighbors
-                if G_simplified.has_edge(n1, n2):
+    for i in range(iter):
+        for node in list(grapheSimplifie.nodes):
+            voisins = list(grapheSimplifie.neighbors(node))
+            if len(voisins) == 2:
+                v1, v2 = voisins
+                if grapheSimplifie.has_edge(v1, v2):
                     continue  # Éviter les doublons
 
                 # Récupération des poids et calcul du poids total 
-                data1 = G_simplified.get_edge_data(node, n1)
-                data2 = G_simplified.get_edge_data(node, n2)
+                data1 = grapheSimplifie.get_edge_data(node, v1)
+                data2 = grapheSimplifie.get_edge_data(node, v2)
                 poidsTotal = data1['weight'] + data2['weight']
 
                 # Fusion des arêtes
-                G_simplified.add_edge(n1, n2, weight=poidsTotal)
+                grapheSimplifie.add_edge(v1, v2, weight=poidsTotal)
                 noeudsASupprimer.append(node)
 
-        G_simplified.remove_nodes_from(noeudsASupprimer)
-    return G_simplified
+        grapheSimplifie.remove_nodes_from(noeudsASupprimer)
+    return grapheSimplifie
 
-# Application de la simplification
-G_simplified = G    #simplify_graph(G)
+# Application des simplifications
+#grapheSimplifie = fusionner_clusters(graphe, 1000)
+#grapheSimplifie = simplifier_graphe(graphe)
+grapheSimplifie = graphe
 
 # Visualisation du graphe simplifié
-pos = {node: (node[1], node[0]) for node in G_simplified.nodes}
+pos = {node: (node[1], node[0]) for node in grapheSimplifie.nodes}
 plt.figure(figsize=(10, 8))
-nx.draw(G_simplified, pos, node_size=2, edge_color='blue', with_labels=False)
+nx.draw(grapheSimplifie, pos, node_size=2, edge_color='blue', with_labels=False)
 plt.title("Graphe simplifié (topologie réduite)")
 plt.xlabel("Longitude")
 plt.ylabel("Latitude")
