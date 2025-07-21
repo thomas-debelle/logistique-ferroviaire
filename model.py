@@ -10,7 +10,6 @@ import yaml
 import logging
 import glob
 import os
-from math import floor
 import datetime
 from logging import info, warning, error
 import copy

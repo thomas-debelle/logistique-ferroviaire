@@ -1,5 +1,4 @@
 ## TODO - développement
-- Ajouter les gares et les ITE aux graphes. Ajouter les noeuds, et raccorder chaque nouvel élément au noeud du graphe le plus proche.
 - Ajouter des informations aux arêtes du réseau pour contraindre les itinéraires empruntés par les trains de fret (par exemple, interdiction de rouler sur les LGV, contrainte sur certains types de traction, coûts d'emprunt de certains sillons...).
 - Chercher des données et des informations pour construire un carnet de commandes réaliste.
 

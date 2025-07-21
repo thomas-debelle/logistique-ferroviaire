@@ -6,8 +6,12 @@ import matplotlib.pyplot as plt
 from scipy.spatial import KDTree
 import numpy as np
 import sys
+from enum import Enum
 import folium
 
+# -------------------------------------
+# Paramètres
+# -------------------------------------
 def extraire_lignes(chaineGeoJson):
     try:
         geojson = json.loads(chaineGeoJson)
@@ -37,7 +41,7 @@ def longueur_chemin_graphe_safe(graphe, source, target):
     except nx.NetworkXNoPath as e:
         return sys.maxsize          # Retourne une très grande valeur
     
-def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, noeudsXY, correspondanceXYNoeud, eviterNoeudsAccessible=False, limiteAccessibilite=20):
+def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, noeudsXY, correspondanceXYNoeud, eviterNoeudsAccessible=False, typeNoeud=None, limiteAccessibilite=20):
     x, y = convertir_latlon_xy(noeud[0], noeud[1])
     indices = arbreKd.query_ball_point([x, y], r=rayon)
 
@@ -50,6 +54,8 @@ def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, noeudsXY, correspondance
             continue
         if eviterNoeudsAccessible and (graphe.has_edge(noeud, voisin) or voisin == noeud or longueur_chemin_graphe_safe(graphe, noeud, voisin) < limiteAccessibilite):
             continue            # Si un arête est déjà présente, le voisin est le noeud, ou le voisin est déjà accessible en un nombre d'arêtes limité, alors le voisin n'est pas éligible au raccordement. 
+        if (not typeNoeud is None) and graphe.nodes[voisin].get("typeNoeud") != typeNoeud:
+            continue            # Si le noeud n'est pas du type passé en argument, alors il ne peut pas être retourné
         dist = geodesic(noeud, voisin).meters
         if dist < distanceMinimale:
             noeudPlusProche = voisin
@@ -57,10 +63,6 @@ def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, noeudsXY, correspondance
     return noeudPlusProche, distanceMinimale
 
 def fusionner_clusters(graphe, rayonFusion):
-    """
-    La fusion des clusters permet de réduire le nombre de noeuds agglomérés.
-    """
-
     def calculer_barycentre(points):
         lats = [p[0] for p in points]
         lons = [p[1] for p in points]
@@ -83,6 +85,10 @@ def fusionner_clusters(graphe, rayonFusion):
         if len(cluster) <= 1:
             continue
 
+        # Exclusion si le cluster contient une gare ou un ITE
+        if any(graphe.nodes[n].get("typeNoeud") in [TypeNoeud.Gare, TypeNoeud.ITE] for n in cluster):
+            continue
+
         visités.update(cluster)
         pointFusion = calculer_barycentre(cluster)
         remplacements.append((cluster, pointFusion))
@@ -101,16 +107,21 @@ def fusionner_clusters(graphe, rayonFusion):
 
     return graphe
 
+
 def est_dans_zone(point, latMin, latMax, lonMin, lonMax):
     lat, lon = point
     return latMin <= lat <= latMax and lonMin <= lon <= lonMax
 
 def simplifier_graphe(G, iter=100):
     grapheSimplifie = G.copy()
-    noeudsASupprimer = []
 
-    for i in range(iter):
+    for _ in range(iter):
+        noeudsASupprimer = []
         for node in list(grapheSimplifie.nodes):
+            type_node = grapheSimplifie.nodes[node].get("typeNoeud")
+            if type_node in [TypeNoeud.Gare, TypeNoeud.ITE]:
+                continue
+
             voisins = list(grapheSimplifie.neighbors(node))
             if len(voisins) == 2:
                 v1, v2 = voisins
@@ -127,8 +138,14 @@ def simplifier_graphe(G, iter=100):
                 noeudsASupprimer.append(node)
 
         grapheSimplifie.remove_nodes_from(noeudsASupprimer)
+
     return grapheSimplifie
 
+
+class TypeNoeud(Enum):
+    Ligne = "Ligne"
+    Gare = "Gare"
+    ITE = "ITE"
 
 # -------------------------------------
 # Paramètres
@@ -141,14 +158,14 @@ cheminFichierITE = 'constructeur/données/liste-des-ite.csv'
 # Paramètres du graphe
 vitesseParDefaut = 100
 rayonRaccordements = 400
-lonMin = -90
-lonMax = 90
-latMin = -90
-latMax = 90
-#lonMin = -4.70         # Coordonnées de la Bretagne (pour les tests)
-#lonMax = -1.169
-#latMin = 46.68
-#latMax = 49.00
+#lonMin = -90
+#lonMax = 90
+#latMin = -90
+#latMax = 90
+lonMin = -4.70         # Coordonnées de la Bretagne (pour les tests)
+lonMax = -1.169
+latMin = 46.68
+latMax = 49.00
 
 
 # -------------------------------------
@@ -161,8 +178,9 @@ dfITE = pd.read_csv(cheminFichierITE, sep=';')
 
 # Retraitement des données
 dfLignes['V_MAX'] = pd.to_numeric(dfLignes['V_MAX'], errors='coerce')
+dfITE['GARE'] = dfITE['GARE'].fillna('')
 
-# Construction du graphe brut
+# Construction des lignes
 graphe = nx.Graph()
 segments = []
 libellesSegments = []
@@ -172,7 +190,7 @@ for _, ligne in dfLignes.iterrows():
     if pd.isna(vMax):
         vMax = vitesseParDefaut
 
-    # Extraction et ajout des segments
+    # Extraction et ajout des segments de lignes
     lignes = extraire_lignes(ligne['Geo Shape'])
     for lignesCoords in lignes:
         segment = [(lat, lon) for lon, lat in lignesCoords]
@@ -187,7 +205,24 @@ for _, ligne in dfLignes.iterrows():
             if p1 != p2:
                 dist = geodesic(p1, p2).kilometers
                 poids = (dist / vMax) * 60      # Temps de parcours estimé en minutes
+                graphe.add_node(p1, typeNoeud=TypeNoeud.Ligne, nomNoeud="")
+                graphe.add_node(p2, typeNoeud=TypeNoeud.Ligne)
                 graphe.add_edge(p1, p2, weight=poids)
+
+# Ajout des noeuds des gares et des ITE
+for _, gare in dfGares.iterrows():
+    coords = gare['C_GEO'].split(',')
+    coords = (float(coords[0]), float(coords[1]))
+    if gare['FRET'] == 'N' or not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
+        continue
+    graphe.add_node(coords, typeNoeud=TypeNoeud.Gare, libelleNoeud=gare['LIBELLE'])
+
+for _, ite in dfITE.iterrows():
+    coords = ite['C_GEO'].split(',')
+    coords = (float(coords[0]), float(coords[1]))
+    if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
+        continue
+    graphe.add_node(coords, typeNoeud=TypeNoeud.ITE, libelleNoeud=ite['GARE'])
 
 # Construction du KDTree associé aux noeuds du graphe
 correspondanceXYNoeud = {}
@@ -206,14 +241,45 @@ for segment in segments:
         continue
     for extremite in [segment[0], segment[-1]]:
         if not est_dans_zone(extremite, latMin, latMax, lonMin, lonMax) or len(list(graphe.neighbors(extremite))) > 1:
-            continue            # Si un raccordement a déjà été effectué, on ne traite pas cette extrémité
-        noeudProche, dist = trouver_noeud_proche(graphe, arbreKd, extremite, rayonRaccordements, noeudsXY, correspondanceXYNoeud, eviterNoeudsAccessible=True)
+            continue            # L'extrémité n'est pas traitée si un raccordement a déjà été effectué ou si elle n'est pas dans la zone configurée
+        noeudProche, dist = trouver_noeud_proche(
+            graphe, 
+            arbreKd, 
+            extremite, 
+            rayonRaccordements, 
+            noeudsXY, 
+            correspondanceXYNoeud, 
+            eviterNoeudsAccessible=True, 
+            typeNoeud=TypeNoeud.Ligne)          # On ne relie pas les extrémités à des ITE ou des gares, car la ligne pourrait alors ne pas être raccordée correctement
         if noeudProche:
             graphe.add_edge(extremite, noeudProche, weight=0)
+
+# Raccordement des gares et des ITE
+for noeud in graphe.nodes:
+    typeNoeud = graphe.nodes[noeud].get("typeNoeud")
+    if typeNoeud in [TypeNoeud.Gare, TypeNoeud.ITE]:
+        if not est_dans_zone(noeud, latMin, latMax, lonMin, lonMax):
+            continue
+        if len(list(graphe.neighbors(noeud))) > 0:
+            continue  # Ne pas raccorder si déjà connecté
+
+        noeudProche, dist = trouver_noeud_proche(
+            graphe,
+            arbreKd,
+            noeud,
+            rayonRaccordements,
+            noeudsXY,
+            correspondanceXYNoeud,
+            eviterNoeudsAccessible=True
+        )
+        if noeudProche:
+            graphe.add_edge(noeud, noeudProche, weight=0)           # Poids nul car on suppose un raccordement direct
+
 
 # Application des simplifications
 grapheSimplifie = simplifier_graphe(graphe)
 grapheSimplifie = fusionner_clusters(grapheSimplifie, 1000)
+#grapheSimplifie = graphe        # Décommenter pour les tests
 
 # ------------------------------------------
 # Visualisation (utile si le graphe est trop gros)
@@ -233,9 +299,9 @@ plt.show()
 # ------------------------------------------
 # Création de la carte Folium
 # ------------------------------------------
-map = folium.Map(location=[46.5, 2.5], zoom_start=6, tiles="OpenStreetMap")
+map = folium.Map(location=[(latMin + latMax) / 2, (lonMin + lonMax) / 2], zoom_start=8, tiles="OpenStreetMap")
 
-# Ajout des segments
+# Ajout des segments d'origine (lignes bleues transparentes)
 for s in range(len(segments)):
     segment = segments[s]
     folium.PolyLine(
@@ -246,17 +312,40 @@ for s in range(len(segments)):
         tooltip=libellesSegments[s]
     ).add_to(map)
 
-
-# Ajout du graphe simplifié
+# Ajout du graphe simplifié (arêtes rouges)
 for u, v, data in grapheSimplifie.edges(data=True):
-    coords = [(u[0], u[1]), (v[0], v[1])]  # (lat, lon)
+    coords = [(u[0], u[1]), (v[0], v[1])]
     folium.PolyLine(
         coords,
         color="red",
         weight=2,
         opacity=0.6,
-        tooltip=f"Temps de parcours: {round(data['weight'], 2)} min"
+        tooltip=f"Temps de parcours : {round(data['weight'], 2)} min"
     ).add_to(map)
 
-# Sauvegarder la carte
+# Ajout des nœuds selon leur type
+for noeud, data in grapheSimplifie.nodes(data=True):
+    lat, lon = noeud
+    typeNoeud = data.get("typeNoeud", TypeNoeud.Ligne)
+
+    if typeNoeud == TypeNoeud.Ligne:
+        color = "black"
+    elif typeNoeud == TypeNoeud.Gare:
+        color = "green"
+    elif typeNoeud == TypeNoeud.ITE:
+        color = "purple"
+    else:
+        color = "gray"
+
+    folium.CircleMarker(
+        location=(lat, lon),
+        radius=3,
+        color=color,
+        fill=True,
+        fill_color=color,
+        fill_opacity=0.8,
+        tooltip=str(typeNoeud.value + ' - ' + data.get("libelleNoeud", ""))
+    ).add_to(map)
+
+# Sauvegarde de la carte
 map.save("graphe_ferroviaire.html")
