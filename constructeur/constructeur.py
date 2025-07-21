@@ -21,7 +21,6 @@ def extraire_lignes(chaineGeoJson):
         return []
 
 
-
 def arrondir_point(point, precision=10):
     return (round(point[0], precision), round(point[1], precision))
 
@@ -38,7 +37,7 @@ def longueur_chemin_graphe_safe(graphe, source, target):
     except nx.NetworkXNoPath as e:
         return sys.maxsize          # Retourne une très grande valeur
     
-def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, eviterNoeudsAccessible=False, limiteAccessibilite=20):
+def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, noeudsXY, correspondanceXYNoeud, eviterNoeudsAccessible=False, limiteAccessibilite=20):
     x, y = convertir_latlon_xy(noeud[0], noeud[1])
     indices = arbreKd.query_ball_point([x, y], r=rayon)
 
@@ -58,6 +57,9 @@ def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, eviterNoeudsAccessible=F
     return noeudPlusProche, distanceMinimale
 
 def fusionner_clusters(graphe, rayonFusion):
+    """
+    La fusion des clusters permet de réduire le nombre de noeuds agglomérés.
+    """
 
     def calculer_barycentre(points):
         lats = [p[0] for p in points]
@@ -103,76 +105,6 @@ def est_dans_zone(point, latMin, latMax, lonMin, lonMax):
     lat, lon = point
     return latMin <= lat <= latMax and lonMin <= lon <= lonMax
 
-
-
-# Paramètres
-vitesseParDefaut = 100
-rayonRaccordements = 400
-cheminFichier = 'constructeur/données/données.csv'
-#lonMin = -4.70
-#lonMax = -1.169
-#latMin = 46.68
-#latMax = 49.00
-lonMin = -90
-lonMax = 90
-latMin = -90
-latMax = 90
-
-# Chargement des données
-df = pd.read_csv(cheminFichier, sep=';')
-df['V_MAX'] = pd.to_numeric(df['V_MAX'], errors='coerce')
-
-# Construction du graphe brut
-graphe = nx.Graph()
-segments = []
-libellesSegments = []
-for _, ligne in df.iterrows():
-    # Extraction de la vitesse
-    vMax = ligne['V_MAX']
-    if pd.isna(vMax):
-        vMax = vitesseParDefaut
-
-    # Extraction et ajout des segments
-    lignes = extraire_lignes(ligne['Geo Shape'])
-    for lignesCoords in lignes:
-        segment = [(lat, lon) for lon, lat in lignesCoords]
-        segments.append(segment)
-        libellesSegments.append(ligne['LIB_LIGNE'] + f' ({int(vMax)} km/h)')
-
-        for i in range(len(segment) - 1):
-            p1 = segment[i]
-            p2 = segment[i + 1]
-            if not (est_dans_zone(p1, latMin, latMax, lonMin, lonMax) or est_dans_zone(p2, latMin, latMax, lonMin, lonMax)):
-                continue
-            if p1 != p2:
-                dist = geodesic(p1, p2).kilometers
-                poids = (dist / vMax) * 60      # Temps de parcours estimé en minutes
-                graphe.add_edge(p1, p2, weight=poids)
-
-# Construction du KDTree
-correspondanceXYNoeud = {}
-noeudsXY = []
-
-for noeud in graphe.nodes:
-    x, y = convertir_latlon_xy(noeud[0], noeud[1])
-    noeudsXY.append((x, y))
-    correspondanceXYNoeud[(x, y)] = noeud
-
-arbreKd = KDTree(noeudsXY)
-
-# Raccordement des extrémités
-for segment in segments:
-    if len(segment) < 2:
-        continue
-    for extremite in [segment[0], segment[-1]]:
-        if not est_dans_zone(extremite, latMin, latMax, lonMin, lonMax) or len(list(graphe.neighbors(extremite))) > 1:
-            continue            # Si un raccordement a déjà été effectué, on ne traite pas cette extrémité
-        noeudProche, dist = trouver_noeud_proche(graphe, arbreKd, extremite, rayonRaccordements, eviterNoeudsAccessible=True)
-        if noeudProche:
-            graphe.add_edge(extremite, noeudProche, weight=0)
-
-
-
 def simplifier_graphe(G, iter=100):
     grapheSimplifie = G.copy()
     noeudsASupprimer = []
@@ -197,11 +129,91 @@ def simplifier_graphe(G, iter=100):
         grapheSimplifie.remove_nodes_from(noeudsASupprimer)
     return grapheSimplifie
 
+
+# -------------------------------------
+# Paramètres
+# -------------------------------------
+# Paramètres de données
+cheminFichierLignes = 'constructeur/données/liste-des-lignes.csv'
+cheminFichierGares = 'constructeur/données/liste-des-gares.csv'
+cheminFichierITE = 'constructeur/données/liste-des-ite.csv'
+
+# Paramètres du graphe
+vitesseParDefaut = 100
+rayonRaccordements = 400
+lonMin = -90
+lonMax = 90
+latMin = -90
+latMax = 90
+#lonMin = -4.70         # Coordonnées de la Bretagne (pour les tests)
+#lonMax = -1.169
+#latMin = 46.68
+#latMax = 49.00
+
+
+# -------------------------------------
+# Processus principal
+# -------------------------------------
+# Chargement des données
+dfLignes = pd.read_csv(cheminFichierLignes, sep=';')
+dfGares = pd.read_csv(cheminFichierGares, sep=';')
+dfITE = pd.read_csv(cheminFichierITE, sep=';')
+
+# Retraitement des données
+dfLignes['V_MAX'] = pd.to_numeric(dfLignes['V_MAX'], errors='coerce')
+
+# Construction du graphe brut
+graphe = nx.Graph()
+segments = []
+libellesSegments = []
+for _, ligne in dfLignes.iterrows():
+    # Extraction de la vitesse
+    vMax = ligne['V_MAX']
+    if pd.isna(vMax):
+        vMax = vitesseParDefaut
+
+    # Extraction et ajout des segments
+    lignes = extraire_lignes(ligne['Geo Shape'])
+    for lignesCoords in lignes:
+        segment = [(lat, lon) for lon, lat in lignesCoords]
+        segments.append(segment)
+        libellesSegments.append(ligne['LIB_LIGNE'] + f' ({int(vMax)} km/h)')
+
+        for i in range(len(segment) - 1):
+            p1 = segment[i]
+            p2 = segment[i + 1]
+            if not (est_dans_zone(p1, latMin, latMax, lonMin, lonMax) or est_dans_zone(p2, latMin, latMax, lonMin, lonMax)):
+                continue
+            if p1 != p2:
+                dist = geodesic(p1, p2).kilometers
+                poids = (dist / vMax) * 60      # Temps de parcours estimé en minutes
+                graphe.add_edge(p1, p2, weight=poids)
+
+# Construction du KDTree associé aux noeuds du graphe
+correspondanceXYNoeud = {}
+noeudsXY = []
+
+for noeud in graphe.nodes:
+    x, y = convertir_latlon_xy(noeud[0], noeud[1])
+    noeudsXY.append((x, y))
+    correspondanceXYNoeud[(x, y)] = noeud
+
+arbreKd = KDTree(noeudsXY)
+
+# Raccordement des extrémités de lignes
+for segment in segments:
+    if len(segment) < 2:
+        continue
+    for extremite in [segment[0], segment[-1]]:
+        if not est_dans_zone(extremite, latMin, latMax, lonMin, lonMax) or len(list(graphe.neighbors(extremite))) > 1:
+            continue            # Si un raccordement a déjà été effectué, on ne traite pas cette extrémité
+        noeudProche, dist = trouver_noeud_proche(graphe, arbreKd, extremite, rayonRaccordements, noeudsXY, correspondanceXYNoeud, eviterNoeudsAccessible=True)
+        if noeudProche:
+            graphe.add_edge(extremite, noeudProche, weight=0)
+
 # Application des simplifications
 grapheSimplifie = simplifier_graphe(graphe)
 grapheSimplifie = fusionner_clusters(grapheSimplifie, 1000)
-#grapheSimplifie = graphe
-
 
 # ------------------------------------------
 # Visualisation (utile si le graphe est trop gros)
