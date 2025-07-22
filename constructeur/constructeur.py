@@ -95,6 +95,11 @@ def simplifier_graphe(G, iter=100):
 
     return grapheSimplifie
 
+def extraire_composante_principale(graphe):
+    composantes = list(nx.connected_components(graphe))     
+    principale = max(composantes, key=len)                  # Cherche la plus grande composante connexe
+    return graphe.subgraph(principale).copy()
+
 
 class TypeNoeud(Enum):
     Ligne = "Ligne"
@@ -124,14 +129,14 @@ rayonRaccordements = 400
 statutsLigneAutorises = ['Exploitée', 'Transférée en voie de service']      # Statut des lignes pouvant être ajoutées au graphe
 exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # Type d'exploitation en voies doubles
 
-#lonMin = -90
-#lonMax = 90
-#latMin = -90
-#latMax = 90
-lonMin = -4.70         # Coordonnées de la Bretagne (pour les tests)
-lonMax = -1.169
-latMin = 46.68
-latMax = 49.00
+lonMin = -90
+lonMax = 90
+latMin = -90
+latMax = 90
+#lonMin = -4.70         # Coordonnées de la Bretagne (pour les tests)
+#lonMax = -1.169
+#latMin = 46.68
+#latMax = 49.00
 
 
 # -------------------------------------
@@ -233,24 +238,25 @@ for noeud in graphe.nodes:
     if typeNoeud in [TypeNoeud.Chantier, TypeNoeud.ITE]:
         if not est_dans_zone(noeud, latMin, latMax, lonMin, lonMax):
             continue
-        if len(list(graphe.neighbors(noeud))) > 10:     # TODO: chercher à générer plusieurs raccordements (définir une limite d'accessibilité)
-            continue  # Ne pas raccorder si déjà connecté
 
-        noeudProche, dist = trouver_noeud_proche(
-            graphe,
-            arbreKd,
-            noeud,
-            rayonRaccordements,
-            noeudsXY,
-            correspondanceXYNoeud,
-            eviterNoeudsAccessible=True
-        )
-        if noeudProche:
-            graphe.add_edge(noeud, noeudProche, weight=0, typeExploit=TypeExploit.Double)           # Poids nul car on suppose un raccordement direct
+        noeudProche = 1     # Valeur de base pour rentrer dans la boucle
+        while noeudProche:      # Raccordement à tous les noeuds proches qui ne sont pas accessibles
+            noeudProche, dist = trouver_noeud_proche(
+                graphe,
+                arbreKd,
+                noeud,
+                rayonRaccordements,
+                noeudsXY,
+                correspondanceXYNoeud,
+                eviterNoeudsAccessible=True
+            )
+            if noeudProche:
+                graphe.add_edge(noeud, noeudProche, weight=0, typeExploit=TypeExploit.Double)           # Poids nul car on suppose un raccordement direct
 
 
 # Application des simplifications
 grapheSimplifie = simplifier_graphe(graphe)
+grapheSimplifie = extraire_composante_principale(grapheSimplifie)
 #grapheSimplifie = graphe        # Décommenter pour les tests
 
 # ------------------------------------------
@@ -292,7 +298,7 @@ for u, v, data in grapheSimplifie.edges(data=True):
         color="red",
         weight=2,
         opacity=0.6,
-        tooltip=f"Temps de parcours : {round(data['weight'], 2)} min"
+        tooltip=f"<b>Régiment d'exploitation</b> : {data.get("typeExploit", TypeExploit.Double).value}<br><b>Temps de parcours</b> : {round(data['weight'], 2)} min"
     ).add_to(map)
 
 # Ajout des nœuds selon leur type

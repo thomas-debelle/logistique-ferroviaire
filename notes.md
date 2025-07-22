@@ -1,12 +1,13 @@
 ## TODO - développement
-- Gérer le non-raccordement à Dol-de-Bretagne. --> faire en sorte que les gares et les ITE se raccordent à tous les noeuds autour
-- Afficher les régimes d'exploitation dans le folium.
-- Supprimer automatiquement les noeuds et arrêtes non raccordés au réseau principal (si des voies sont fermées, par exemple).
-- Chercher des données et des informations pour construire un carnet de commandes réaliste.
+- Gérer les fusions avec les exploits.
+- Permettre d'ajuster les vitesses effectives de circulation des trains de fret sur les lignes.
+- Voir quoi faire avec la liste des triages : https://ressources.data.sncf.com/explore/dataset/liste-des-triages/information/?location=11,50.29965,3.3062&basemap=jawg.transports
+- Ajouter les chantiers de transport combiné : https://ressources.data.sncf.com/explore/dataset/chantiers-de-transport-combines/information/
 
 - Intégrer des contraintes de blocage temporaire ou permanente du réseau pour certaines motrices, sur certains arcs, à des instants donnés. Adapter le processus de rechercher du plus court chemin pour éviter ces arcs. Dans l'ensemble, faire en sorte que le réseau soit dynamique.
 - Afficher les solutions et leur évolution. Faire en sorte d'afficher le graphe en respectant ls positions géographiques pour les noeuds.
 - Ajouter des capacités max en terme de wagons et de motrices dans les gares. Augmenter les coûts logistiques si ces capacités ne sont pas respectées.
+- Construire les premières expériences. Chercher des informations économiques pour construire une carnet de commandes (si possible).
 
 ### Bonus
 - Adapter la distance de raccordement en fonction de la zone (pour Paris, la distance est plus faible qu'ailleurs, sinon raccordements abusifs à Saint-Lazare).
