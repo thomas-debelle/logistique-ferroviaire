@@ -10,7 +10,7 @@ from enum import Enum
 import folium
 
 # -------------------------------------
-# Paramètres
+# Fonctions
 # -------------------------------------
 def extraire_lignes(chaineGeoJson):
     try:
@@ -62,52 +62,6 @@ def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, noeudsXY, correspondance
             distanceMinimale = dist
     return noeudPlusProche, distanceMinimale
 
-def fusionner_clusters(graphe, rayonFusion):
-    def calculer_barycentre(points):
-        lats = [p[0] for p in points]
-        lons = [p[1] for p in points]
-        return (sum(lats) / len(lats), sum(lons) / len(lons))
-
-    noeuds = list(graphe.nodes)
-    coordXY = [convertir_latlon_xy(lat, lon) for lat, lon in noeuds]
-    arbre = KDTree(coordXY)
-
-    visités = set()
-    remplacements = []
-
-    for i, noeud in enumerate(noeuds):
-        if noeud in visités:
-            continue
-
-        voisins = arbre.query_ball_point(coordXY[i], r=rayonFusion)
-        cluster = [noeuds[j] for j in voisins if noeuds[j] not in visités]
-
-        if len(cluster) <= 1:
-            continue
-
-        # Exclusion si le cluster contient une gare ou un ITE
-        if any(graphe.nodes[n].get("typeNoeud") in [TypeNoeud.Gare, TypeNoeud.ITE] for n in cluster):
-            continue
-
-        visités.update(cluster)
-        pointFusion = calculer_barycentre(cluster)
-        remplacements.append((cluster, pointFusion))
-
-    for anciensNoeuds, nouveauNoeud in remplacements:
-        voisinsExternes = set()
-        for n in anciensNoeuds:
-            voisins = list(graphe.neighbors(n))
-            for v in voisins:
-                if v not in anciensNoeuds:
-                    poids = graphe[n][v]['weight']
-                    voisinsExternes.add((v, poids))
-        graphe.remove_nodes_from(anciensNoeuds)
-        for v, poids in voisinsExternes:
-            graphe.add_edge(nouveauNoeud, v, weight=poids)
-
-    return graphe
-
-
 def est_dans_zone(point, latMin, latMax, lonMin, lonMax):
     lat, lon = point
     return latMin <= lat <= latMax and lonMin <= lon <= lonMax
@@ -119,7 +73,7 @@ def simplifier_graphe(G, iter=100):
         noeudsASupprimer = []
         for node in list(grapheSimplifie.nodes):
             type_node = grapheSimplifie.nodes[node].get("typeNoeud")
-            if type_node in [TypeNoeud.Gare, TypeNoeud.ITE]:
+            if type_node in [TypeNoeud.Chantier, TypeNoeud.ITE]:
                 continue
 
             voisins = list(grapheSimplifie.neighbors(node))
@@ -134,7 +88,7 @@ def simplifier_graphe(G, iter=100):
                 poidsTotal = data1['weight'] + data2['weight']
 
                 # Fusion des arêtes
-                grapheSimplifie.add_edge(v1, v2, weight=poidsTotal)
+                grapheSimplifie.add_edge(v1, v2, weight=poidsTotal, typeExploit=TypeExploit.Double)     # TODO: quelle exploit pour les fusions ?
                 noeudsASupprimer.append(node)
 
         grapheSimplifie.remove_nodes_from(noeudsASupprimer)
@@ -144,20 +98,32 @@ def simplifier_graphe(G, iter=100):
 
 class TypeNoeud(Enum):
     Ligne = "Ligne"
-    Gare = "Gare"
+    Chantier = "Chantier"
     ITE = "ITE"
+
+class TypeExploit(Enum):
+    Double = "Double"
+    Simple = "Simple"
+
+
+
+
 
 # -------------------------------------
 # Paramètres
 # -------------------------------------
 # Paramètres de données
-cheminFichierLignes = 'constructeur/données/liste-des-lignes.csv'
-cheminFichierGares = 'constructeur/données/liste-des-gares.csv'
+cheminFichierLignes = 'constructeur/données/liste-des-lignes.csv'           # Remarque: le fichier des lignes a été consolidé avec des informations provenant de nombreuses sources.
+cheminFichierChantiers = 'constructeur/données/liste-des-chantiers.csv'
 cheminFichierITE = 'constructeur/données/liste-des-ite.csv'
 
-# Paramètres du graphe
-vitesseParDefaut = 100
+# Paramètres de génération du graphe
+vitesseParDefaut = 160          # Par défaut si la vitesse n'est pas renseignée dans les données
+vitesseNominaleMax = 220        # Les lignes dont la vitesse nominale max est supérieure à cette valeur seront exclues du graphe.
 rayonRaccordements = 400
+statutsLigneAutorises = ['Exploitée', 'Transférée en voie de service']      # Statut des lignes pouvant être ajoutées au graphe
+exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # Type d'exploitation en voies doubles
+
 #lonMin = -90
 #lonMax = 90
 #latMin = -90
@@ -173,7 +139,7 @@ latMax = 49.00
 # -------------------------------------
 # Chargement des données
 dfLignes = pd.read_csv(cheminFichierLignes, sep=';')
-dfGares = pd.read_csv(cheminFichierGares, sep=';')
+dfChantiers = pd.read_csv(cheminFichierChantiers, sep=';')
 dfITE = pd.read_csv(cheminFichierITE, sep=';')
 
 # Retraitement des données
@@ -199,23 +165,30 @@ for _, ligne in dfLignes.iterrows():
 
         for i in range(len(segment) - 1):
             p1 = segment[i]
-            p2 = segment[i + 1]
-            if not (est_dans_zone(p1, latMin, latMax, lonMin, lonMax) or est_dans_zone(p2, latMin, latMax, lonMin, lonMax)):
+            p2 = segment[i + 1]         # Toutes les lignes sont ajoutées au tracé des segments
+            if (
+                not (est_dans_zone(p1, latMin, latMax, lonMin, lonMax) or est_dans_zone(p2, latMin, latMax, lonMin, lonMax))
+                or not ligne['STATUT'] in statutsLigneAutorises
+                or ligne['LGV'] == 'Oui'
+                or ligne['V_MAX'] > vitesseNominaleMax):      # Si la ligne ne correspond pas aux paramètres, alors elle n'est pas ajoutée au graphe
                 continue
+
             if p1 != p2:
                 dist = geodesic(p1, p2).kilometers
                 poids = (dist / vMax) * 60      # Temps de parcours estimé en minutes
+                exploit = TypeExploit.Double if ligne['EXPLOIT'] in exploitationsDoubles else TypeExploit.Simple
+
                 graphe.add_node(p1, typeNoeud=TypeNoeud.Ligne, nomNoeud="")
                 graphe.add_node(p2, typeNoeud=TypeNoeud.Ligne)
-                graphe.add_edge(p1, p2, weight=poids)
+                graphe.add_edge(p1, p2, weight=poids, typeExploit=exploit)
 
-# Ajout des noeuds des gares et des ITE
-for _, gare in dfGares.iterrows():
-    coords = gare['C_GEO'].split(',')
+# Ajout des noeuds des chantiers et des ITE
+for _, chantier in dfChantiers.iterrows():
+    coords = chantier['C_GEO'].split(',')
     coords = (float(coords[0]), float(coords[1]))
-    if gare['FRET'] == 'N' or not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
+    if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, typeNoeud=TypeNoeud.Gare, libelleNoeud=gare['LIBELLE'])
+    graphe.add_node(coords, typeNoeud=TypeNoeud.Chantier, libelleNoeud=chantier['LIBELLE'])
 
 for _, ite in dfITE.iterrows():
     coords = ite['C_GEO'].split(',')
@@ -240,7 +213,7 @@ for segment in segments:
     if len(segment) < 2:
         continue
     for extremite in [segment[0], segment[-1]]:
-        if not est_dans_zone(extremite, latMin, latMax, lonMin, lonMax) or len(list(graphe.neighbors(extremite))) > 1:
+        if not graphe.has_node(extremite) or len(list(graphe.neighbors(extremite))) > 1:
             continue            # L'extrémité n'est pas traitée si un raccordement a déjà été effectué ou si elle n'est pas dans la zone configurée
         noeudProche, dist = trouver_noeud_proche(
             graphe, 
@@ -250,17 +223,17 @@ for segment in segments:
             noeudsXY, 
             correspondanceXYNoeud, 
             eviterNoeudsAccessible=True, 
-            typeNoeud=TypeNoeud.Ligne)          # On ne relie pas les extrémités à des ITE ou des gares, car la ligne pourrait alors ne pas être raccordée correctement
+            typeNoeud=TypeNoeud.Ligne)          # On ne relie pas les extrémités à des ITE ou des chantiers, car la ligne pourrait alors ne pas être raccordée correctement
         if noeudProche:
-            graphe.add_edge(extremite, noeudProche, weight=0)
+            graphe.add_edge(extremite, noeudProche, weight=0, typeExploit=TypeExploit.Double)
 
-# Raccordement des gares et des ITE
+# Raccordement des chantiers et des ITE
 for noeud in graphe.nodes:
     typeNoeud = graphe.nodes[noeud].get("typeNoeud")
-    if typeNoeud in [TypeNoeud.Gare, TypeNoeud.ITE]:
+    if typeNoeud in [TypeNoeud.Chantier, TypeNoeud.ITE]:
         if not est_dans_zone(noeud, latMin, latMax, lonMin, lonMax):
             continue
-        if len(list(graphe.neighbors(noeud))) > 0:
+        if len(list(graphe.neighbors(noeud))) > 10:     # TODO: chercher à générer plusieurs raccordements (définir une limite d'accessibilité)
             continue  # Ne pas raccorder si déjà connecté
 
         noeudProche, dist = trouver_noeud_proche(
@@ -273,12 +246,11 @@ for noeud in graphe.nodes:
             eviterNoeudsAccessible=True
         )
         if noeudProche:
-            graphe.add_edge(noeud, noeudProche, weight=0)           # Poids nul car on suppose un raccordement direct
+            graphe.add_edge(noeud, noeudProche, weight=0, typeExploit=TypeExploit.Double)           # Poids nul car on suppose un raccordement direct
 
 
 # Application des simplifications
 grapheSimplifie = simplifier_graphe(graphe)
-grapheSimplifie = fusionner_clusters(grapheSimplifie, 1000)
 #grapheSimplifie = graphe        # Décommenter pour les tests
 
 # ------------------------------------------
@@ -330,7 +302,7 @@ for noeud, data in grapheSimplifie.nodes(data=True):
 
     if typeNoeud == TypeNoeud.Ligne:
         color = "black"
-    elif typeNoeud == TypeNoeud.Gare:
+    elif typeNoeud == TypeNoeud.Chantier:
         color = "green"
     elif typeNoeud == TypeNoeud.ITE:
         color = "purple"

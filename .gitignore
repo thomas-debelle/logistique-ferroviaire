@@ -1,3 +1,4 @@
 archives
 logs
 *.~lock*
+*.PDF
