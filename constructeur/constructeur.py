@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 from scipy.spatial import KDTree
 import numpy as np
 import sys
-from enum import Enum
 import folium
 
 # -------------------------------------
@@ -73,7 +72,7 @@ def simplifier_graphe(G, iter=100):
         noeudsASupprimer = []
         for node in list(grapheSimplifie.nodes):
             type_node = grapheSimplifie.nodes[node].get("typeNoeud")
-            if type_node in [TypeNoeud.Triage, TypeNoeud.ITE]:
+            if type_node in ['Triage', 'ITE']:
                 continue
 
             voisins = list(grapheSimplifie.neighbors(node))
@@ -86,7 +85,7 @@ def simplifier_graphe(G, iter=100):
                 data1 = grapheSimplifie.get_edge_data(node, v1)
                 data2 = grapheSimplifie.get_edge_data(node, v2)
                 poidsTotal = data1['weight'] + data2['weight']
-                typeExploit = TypeExploit.Double if (data1['typeExploit'] == TypeExploit.Double and data2['typeExploit'] == TypeExploit.Double) else TypeExploit.Simple
+                typeExploit = 'Double' if (data1['typeExploit'] == 'Double' and data2['typeExploit'] == 'Double') else 'Simple'
 
                 # Fusion des arêtes
                 grapheSimplifie.add_edge(v1, v2, weight=poidsTotal, typeExploit=typeExploit)
@@ -117,18 +116,6 @@ def coef_vitesse_fret(vMaxNominale):
         return 120 / 170
 
 
-class TypeNoeud(Enum):
-    Ligne = "Ligne"
-    Triage = "Triage"
-    Gare = "Gare"
-    ITE = "ITE"
-    Chantier = "Chantier"
-
-class TypeExploit(Enum):
-    Double = "Double"
-    Simple = "Simple"
-
-
 
 
 
@@ -153,10 +140,17 @@ exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # T
 #lonMax = 90
 #latMin = -90
 #latMax = 90
-lonMin = -4.70         # Coordonnées de la Bretagne (pour les tests)
-lonMax = -1.169
-latMin = 46.68
-latMax = 49.00
+# Coordonnées de la Bretagne (pour les tests)
+#lonMin = -4.70         
+#lonMax = -1.169
+#latMin = 46.68
+#latMax = 49.00
+# Coordonnées de l'Auvergne-Rhône-Alpes
+lonMin = 2.06  
+lonMax = 7.68 
+latMin = 44.39 
+latMax = 46.78 
+
 
 
 # -------------------------------------
@@ -207,10 +201,10 @@ for _, ligne in dfLignes.iterrows():
             if p1 != p2:
                 dist = geodesic(p1, p2).kilometers
                 poids = (dist / vMax) * 60      # Temps de parcours estimé en minutes
-                exploit = TypeExploit.Double if ligne['EXPLOIT'] in exploitationsDoubles else TypeExploit.Simple
+                exploit = 'Double' if ligne['EXPLOIT'] in exploitationsDoubles else 'Simple'
 
-                graphe.add_node(p1, typeNoeud=TypeNoeud.Ligne, nomNoeud="")
-                graphe.add_node(p2, typeNoeud=TypeNoeud.Ligne)
+                graphe.add_node(p1, typeNoeud='Ligne', nomNoeud="")
+                graphe.add_node(p2, typeNoeud='Ligne')
                 graphe.add_edge(p1, p2, weight=poids, typeExploit=exploit)
 
 # Ajout des autres noeuds
@@ -219,27 +213,27 @@ for _, gare in dfGares.iterrows():
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax) or gare['FRET'] != 'O':
         continue
-    graphe.add_node(coords, typeNoeud=TypeNoeud.Gare, libelleNoeud=gare['LIBELLE'])
+    graphe.add_node(coords, typeNoeud='Gare', libelleNoeud=gare['LIBELLE'])
 
 for _, triage in dfTriages.iterrows():
     coords = triage['C_GEO'].split(',')
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, typeNoeud=TypeNoeud.Triage, libelleNoeud=triage['LIBELLE'])     # Si une gare et un triage sont à la même position, le triage prend le dessus.
+    graphe.add_node(coords, typeNoeud='Triage', libelleNoeud=triage['LIBELLE'])     # Si une gare et un triage sont à la même position, le triage prend le dessus.
 
 for _, ite in dfITE.iterrows():
     coords = ite['C_GEO'].split(',')
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, typeNoeud=TypeNoeud.ITE, libelleNoeud=ite['GARE'])
+    graphe.add_node(coords, typeNoeud='ITE', libelleNoeud=ite['GARE'])
 
 for _, chantier in dfChantiers.iterrows():
     coords = (float(chantier['Latitude']), float(chantier['Longitude']))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, typeNoeud=TypeNoeud.Chantier, libelleNoeud=chantier['VILLE'])
+    graphe.add_node(coords, typeNoeud='Chantier', libelleNoeud=chantier['VILLE'])
 
 # Construction du KDTree associé aux noeuds du graphe
 correspondanceXYNoeud = {}
@@ -267,14 +261,14 @@ for segment in segments:
             noeudsXY, 
             correspondanceXYNoeud, 
             eviterNoeudsAccessible=True, 
-            typeNoeud=TypeNoeud.Ligne)          # On ne relie pas les extrémités à des ITE ou des triages, car la ligne pourrait alors ne pas être raccordée correctement
+            typeNoeud='Ligne')          # On ne relie pas les extrémités à des ITE ou des triages, car la ligne pourrait alors ne pas être raccordée correctement
         if noeudProche:
-            graphe.add_edge(extremite, noeudProche, weight=0, typeExploit=TypeExploit.Double)       # Le raccordement étant théorique, on considère qu'il est de poids nul et à double sens.
+            graphe.add_edge(extremite, noeudProche, weight=0, typeExploit='Double')       # Le raccordement étant théorique, on considère qu'il est de poids nul et à double sens.
 
 # Raccordement des autres noeuds
 for noeud in graphe.nodes:
     typeNoeud = graphe.nodes[noeud].get("typeNoeud")
-    if typeNoeud != TypeNoeud.Ligne:
+    if typeNoeud != 'Ligne':
         if not est_dans_zone(noeud, latMin, latMax, lonMin, lonMax):
             continue
 
@@ -290,13 +284,12 @@ for noeud in graphe.nodes:
                 eviterNoeudsAccessible=True
             )
             if noeudProche:
-                graphe.add_edge(noeud, noeudProche, weight=0, typeExploit=TypeExploit.Double)           # Poids nul car on suppose un raccordement direct
+                graphe.add_edge(noeud, noeudProche, weight=0, typeExploit='Double')           # Poids nul car on suppose un raccordement direct
 
 
 # Application des simplifications
-grapheSimplifie = simplifier_graphe(graphe)
-grapheSimplifie = extraire_composante_principale(grapheSimplifie)
-#grapheSimplifie = graphe        # Décommenter pour les tests
+graphe = simplifier_graphe(graphe)
+graphe = extraire_composante_principale(graphe)
 
 
 
@@ -317,33 +310,35 @@ for s in range(len(segments)):
     ).add_to(map)
 
 # Ajout du graphe simplifié (arêtes rouges)
-for u, v, data in grapheSimplifie.edges(data=True):
+for u, v, data in graphe.edges(data=True):
     coords = [(u[0], u[1]), (v[0], v[1])]
     folium.PolyLine(
         coords,
         color="red",
         weight=2,
         opacity=0.6,
-        tooltip=f"<b>Régiment d'exploitation</b> : {data.get("typeExploit", TypeExploit.Double).value}<br><b>Temps de parcours</b> : {round(data['weight'], 2)} min"
+        tooltip=f"<b>Régiment d'exploitation</b> : {data.get("typeExploit", 'Double')}<br><b>Temps de parcours</b> : {round(data['weight'], 2)} min"
     ).add_to(map)
 
 # Ajout des nœuds selon leur type
-for noeud, data in grapheSimplifie.nodes(data=True):
+for noeud, data in graphe.nodes(data=True):
     lat, lon = noeud
-    typeNoeud = data.get("typeNoeud", TypeNoeud.Ligne)
+    typeNoeud = data.get("typeNoeud", 'Ligne')
 
     radius = 3
-    if typeNoeud == TypeNoeud.Ligne:
+    if typeNoeud == 'Ligne':
         color = "black"
         radius = 1
-    elif typeNoeud == TypeNoeud.Gare:
+    elif typeNoeud == 'Gare':
         color = "green"
-    elif typeNoeud == TypeNoeud.Triage:
+    elif typeNoeud == 'Triage':
         color = "brown"
-    elif typeNoeud == TypeNoeud.ITE:
+        radius = 5
+    elif typeNoeud == 'ITE':
         color = "purple"
-    elif typeNoeud == TypeNoeud.Chantier:
+    elif typeNoeud == 'Chantier':
         color = "blue"
+        radius = 5
     else:
         color = "gray"
 
@@ -354,9 +349,10 @@ for noeud, data in grapheSimplifie.nodes(data=True):
         fill=True,
         fill_color=color,
         fill_opacity=0.8,
-        tooltip=str(typeNoeud.value + ' - ' + data.get("libelleNoeud", ""))
+        tooltip=str(typeNoeud + ' - ' + data.get("libelleNoeud", ""))
     ).add_to(map)
 
-# Sauvegarde de la carte
+# Exportation de la carte et du graphe
 map.save("graphe_ferroviaire.html")
+nx.write_graphml(graphe, "graphe_ferroviaire.graphml")
 print("Graphe sauvegardé.")

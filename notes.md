@@ -1,9 +1,8 @@
 ## TODO - développement
-- Exporter les données dans un format exploitable par l'algorithme.
-
-- Distinguer dans la résolution les ITE (incluant les chantiers de transport combiné) et les triages (on ne peut pas stocker de wagon sur des ITE s'ils ne sont pas la destination).
+- Réécrire le code du modèle avec un mode de résolution permettant de respecter toutes les contraintes.
+- Distinguer dans la résolution les différents noeuds pour en définir la capacité
 - Intégrer des contraintes de blocage temporaire ou permanente du réseau pour certaines motrices, sur certains arcs, à des instants donnés. Adapter le processus de rechercher du plus court chemin pour éviter ces arcs. Dans l'ensemble, faire en sorte que le réseau soit dynamique.
-- Afficher les solutions et leur évolution. Faire en sorte d'afficher le graphe en respectant ls positions géographiques pour les noeuds.
+- Afficher les solutions et leur évolution. Faire en sorte d'afficher le graphe en respectant ls positions géographiques pour les noeuds. (from folium.plugins import TimestampedGeoJson)
 - Ajouter des capacités max en terme de wagons et de motrices dans les gares. Augmenter les coûts logistiques si ces capacités ne sont pas respectées.
 - Construire les premières expériences. Chercher des informations économiques pour construire une carnet de commandes (si possible).
 
