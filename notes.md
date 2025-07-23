@@ -1,5 +1,4 @@
 ## TODO - développement
-- Permettre d'ajuster les vitesses effectives de circulation des trains de fret sur les lignes.
 - Exporter les données dans un format exploitable par l'algorithme.
 
 - Distinguer dans la résolution les ITE (incluant les chantiers de transport combiné) et les triages (on ne peut pas stocker de wagon sur des ITE s'ils ne sont pas la destination).

@@ -101,6 +101,21 @@ def extraire_composante_principale(graphe):
     principale = max(composantes, key=len)                  # Cherche la plus grande composante connexe
     return graphe.subgraph(principale).copy()
 
+def coef_vitesse_fret(vMaxNominale):
+    """
+    Retourne un coefficient appliqué sur la vitesse max nominale de ligne pour connaître la vitesse max du train de fret.
+    """
+    if 10 <= vMaxNominale <= 80:
+        return 1
+    elif 90 <= vMaxNominale <= 100:
+        return 80 / 90
+    elif 110 <= vMaxNominale <= 120:
+        return 90 / 110
+    elif 130 <= vMaxNominale <= 160:
+        return 100 / 130
+    else:
+        return 120 / 170
+
 
 class TypeNoeud(Enum):
     Ligne = "Ligne"
@@ -167,13 +182,17 @@ for _, ligne in dfLignes.iterrows():
     vMax = ligne['V_MAX']
     if pd.isna(vMax):
         vMax = vitesseParDefaut
+    vMax = float(vMax)
+
+    # Calcul de la vitesse de circulation effective du train de fret
+    vEff = coef_vitesse_fret(vMax) * vMax
 
     # Extraction et ajout des lignes
     lignes = extraire_lignes(ligne['Geo Shape'])
     for lignesCoords in lignes:
         segment = [(lat, lon) for lon, lat in lignesCoords]
         segments.append(segment)
-        libellesSegments.append(ligne['LIB_LIGNE'] + f' ({int(vMax)} km/h)')
+        libellesSegments.append(f'<b>{ligne['LIB_LIGNE']}</b><br><b>Vitesse max nominale:</b> {int(vMax)} km/h<br><b>Vitesse effective fret:</b> {round(vEff, 2)} km/h')
 
         for i in range(len(segment) - 1):
             p1 = segment[i]
