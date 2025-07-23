@@ -73,7 +73,7 @@ def simplifier_graphe(G, iter=100):
         noeudsASupprimer = []
         for node in list(grapheSimplifie.nodes):
             type_node = grapheSimplifie.nodes[node].get("typeNoeud")
-            if type_node in [TypeNoeud.Chantier, TypeNoeud.ITE]:
+            if type_node in [TypeNoeud.Triage, TypeNoeud.ITE]:
                 continue
 
             voisins = list(grapheSimplifie.neighbors(node))
@@ -86,9 +86,10 @@ def simplifier_graphe(G, iter=100):
                 data1 = grapheSimplifie.get_edge_data(node, v1)
                 data2 = grapheSimplifie.get_edge_data(node, v2)
                 poidsTotal = data1['weight'] + data2['weight']
+                typeExploit = TypeExploit.Double if (data1['typeExploit'] == TypeExploit.Double and data2['typeExploit'] == TypeExploit.Double) else TypeExploit.Simple
 
                 # Fusion des arêtes
-                grapheSimplifie.add_edge(v1, v2, weight=poidsTotal, typeExploit=TypeExploit.Double)     # TODO: quelle exploit pour les fusions ?
+                grapheSimplifie.add_edge(v1, v2, weight=poidsTotal, typeExploit=typeExploit)
                 noeudsASupprimer.append(node)
 
         grapheSimplifie.remove_nodes_from(noeudsASupprimer)
@@ -103,8 +104,10 @@ def extraire_composante_principale(graphe):
 
 class TypeNoeud(Enum):
     Ligne = "Ligne"
-    Chantier = "Chantier"
+    Triage = "Triage"
+    Gare = "Gare"
     ITE = "ITE"
+    Chantier = "Chantier"
 
 class TypeExploit(Enum):
     Double = "Double"
@@ -119,24 +122,26 @@ class TypeExploit(Enum):
 # -------------------------------------
 # Paramètres de données
 cheminFichierLignes = 'constructeur/données/liste-des-lignes.csv'           # Remarque: le fichier des lignes a été consolidé avec des informations provenant de nombreuses sources.
-cheminFichierChantiers = 'constructeur/données/liste-des-chantiers.csv'
+cheminFichierGares = 'constructeur/données/liste-des-gares.csv'
+cheminFichierTriages = 'constructeur/données/liste-des-triages.csv'
 cheminFichierITE = 'constructeur/données/liste-des-ite.csv'
+cheminFichierChantiers = 'constructeur/données/chantiers-de-transport-combines.csv'
 
 # Paramètres de génération du graphe
-vitesseParDefaut = 160          # Par défaut si la vitesse n'est pas renseignée dans les données
-vitesseNominaleMax = 220        # Les lignes dont la vitesse nominale max est supérieure à cette valeur seront exclues du graphe.
-rayonRaccordements = 400
+vitesseParDefaut = 160          # Par défaut si la vitesse n'est pas renseignée dans les données.
+vitesseNominaleMax = 220        # Les lignes dont la vitesse nominale max est supérieure à cette valeur sont exclues du graphe.
+rayonRaccordements = 400        # Rayon de recherche pour raccorder les extrémités des lignes.
 statutsLigneAutorises = ['Exploitée', 'Transférée en voie de service']      # Statut des lignes pouvant être ajoutées au graphe
 exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # Type d'exploitation en voies doubles
 
-lonMin = -90
-lonMax = 90
-latMin = -90
-latMax = 90
-#lonMin = -4.70         # Coordonnées de la Bretagne (pour les tests)
-#lonMax = -1.169
-#latMin = 46.68
-#latMax = 49.00
+#lonMin = -90
+#lonMax = 90
+#latMin = -90
+#latMax = 90
+lonMin = -4.70         # Coordonnées de la Bretagne (pour les tests)
+lonMax = -1.169
+latMin = 46.68
+latMax = 49.00
 
 
 # -------------------------------------
@@ -144,8 +149,10 @@ latMax = 90
 # -------------------------------------
 # Chargement des données
 dfLignes = pd.read_csv(cheminFichierLignes, sep=';')
-dfChantiers = pd.read_csv(cheminFichierChantiers, sep=';')
+dfGares = pd.read_csv(cheminFichierGares, sep=';')
+dfTriages = pd.read_csv(cheminFichierTriages, sep=';')
 dfITE = pd.read_csv(cheminFichierITE, sep=';')
+dfChantiers = pd.read_csv(cheminFichierChantiers, sep=';')
 
 # Retraitement des données
 dfLignes['V_MAX'] = pd.to_numeric(dfLignes['V_MAX'], errors='coerce')
@@ -161,7 +168,7 @@ for _, ligne in dfLignes.iterrows():
     if pd.isna(vMax):
         vMax = vitesseParDefaut
 
-    # Extraction et ajout des segments de lignes
+    # Extraction et ajout des lignes
     lignes = extraire_lignes(ligne['Geo Shape'])
     for lignesCoords in lignes:
         segment = [(lat, lon) for lon, lat in lignesCoords]
@@ -187,13 +194,20 @@ for _, ligne in dfLignes.iterrows():
                 graphe.add_node(p2, typeNoeud=TypeNoeud.Ligne)
                 graphe.add_edge(p1, p2, weight=poids, typeExploit=exploit)
 
-# Ajout des noeuds des chantiers et des ITE
-for _, chantier in dfChantiers.iterrows():
-    coords = chantier['C_GEO'].split(',')
+# Ajout des autres noeuds
+for _, gare in dfGares.iterrows():
+    coords = gare['C_GEO'].split(',')
+    coords = (float(coords[0]), float(coords[1]))
+    if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax) or gare['FRET'] != 'O':
+        continue
+    graphe.add_node(coords, typeNoeud=TypeNoeud.Gare, libelleNoeud=gare['LIBELLE'])
+
+for _, triage in dfTriages.iterrows():
+    coords = triage['C_GEO'].split(',')
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, typeNoeud=TypeNoeud.Chantier, libelleNoeud=chantier['LIBELLE'])
+    graphe.add_node(coords, typeNoeud=TypeNoeud.Triage, libelleNoeud=triage['LIBELLE'])     # Si une gare et un triage sont à la même position, le triage prend le dessus.
 
 for _, ite in dfITE.iterrows():
     coords = ite['C_GEO'].split(',')
@@ -201,6 +215,12 @@ for _, ite in dfITE.iterrows():
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
     graphe.add_node(coords, typeNoeud=TypeNoeud.ITE, libelleNoeud=ite['GARE'])
+
+for _, chantier in dfChantiers.iterrows():
+    coords = (float(chantier['Latitude']), float(chantier['Longitude']))
+    if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
+        continue
+    graphe.add_node(coords, typeNoeud=TypeNoeud.Chantier, libelleNoeud=chantier['VILLE'])
 
 # Construction du KDTree associé aux noeuds du graphe
 correspondanceXYNoeud = {}
@@ -228,14 +248,14 @@ for segment in segments:
             noeudsXY, 
             correspondanceXYNoeud, 
             eviterNoeudsAccessible=True, 
-            typeNoeud=TypeNoeud.Ligne)          # On ne relie pas les extrémités à des ITE ou des chantiers, car la ligne pourrait alors ne pas être raccordée correctement
+            typeNoeud=TypeNoeud.Ligne)          # On ne relie pas les extrémités à des ITE ou des triages, car la ligne pourrait alors ne pas être raccordée correctement
         if noeudProche:
-            graphe.add_edge(extremite, noeudProche, weight=0, typeExploit=TypeExploit.Double)
+            graphe.add_edge(extremite, noeudProche, weight=0, typeExploit=TypeExploit.Double)       # Le raccordement étant théorique, on considère qu'il est de poids nul et à double sens.
 
-# Raccordement des chantiers et des ITE
+# Raccordement des autres noeuds
 for noeud in graphe.nodes:
     typeNoeud = graphe.nodes[noeud].get("typeNoeud")
-    if typeNoeud in [TypeNoeud.Chantier, TypeNoeud.ITE]:
+    if typeNoeud != TypeNoeud.Ligne:
         if not est_dans_zone(noeud, latMin, latMax, lonMin, lonMax):
             continue
 
@@ -258,19 +278,6 @@ for noeud in graphe.nodes:
 grapheSimplifie = simplifier_graphe(graphe)
 grapheSimplifie = extraire_composante_principale(grapheSimplifie)
 #grapheSimplifie = graphe        # Décommenter pour les tests
-
-# ------------------------------------------
-# Visualisation (utile si le graphe est trop gros)
-# ------------------------------------------
-pos = {node: (node[1], node[0]) for node in grapheSimplifie.nodes}
-plt.figure(figsize=(10, 8))
-nx.draw(grapheSimplifie, pos, node_size=2, edge_color='black', with_labels=False)
-plt.title("Graphe simplifié (topologie réduite)")
-plt.xlabel("Longitude")
-plt.ylabel("Latitude")
-plt.grid(True)
-plt.axis('equal')
-plt.show()
 
 
 
@@ -306,18 +313,24 @@ for noeud, data in grapheSimplifie.nodes(data=True):
     lat, lon = noeud
     typeNoeud = data.get("typeNoeud", TypeNoeud.Ligne)
 
+    radius = 3
     if typeNoeud == TypeNoeud.Ligne:
         color = "black"
-    elif typeNoeud == TypeNoeud.Chantier:
+        radius = 1
+    elif typeNoeud == TypeNoeud.Gare:
         color = "green"
+    elif typeNoeud == TypeNoeud.Triage:
+        color = "brown"
     elif typeNoeud == TypeNoeud.ITE:
         color = "purple"
+    elif typeNoeud == TypeNoeud.Chantier:
+        color = "blue"
     else:
         color = "gray"
 
     folium.CircleMarker(
         location=(lat, lon),
-        radius=3,
+        radius=radius,
         color=color,
         fill=True,
         fill_color=color,
@@ -327,3 +340,4 @@ for noeud, data in grapheSimplifie.nodes(data=True):
 
 # Sauvegarde de la carte
 map.save("graphe_ferroviaire.html")
+print("Graphe sauvegardé.")
