@@ -1,10 +1,12 @@
-## TODO - développement
-- Revoir la forme des solutions : désormais, les motrices ne poursuivent plus les wagons, mais se déplacent sur des noeuds et essaye de récupérer/déposer des wagons à cet emplacement. S'il n'y a pas de wagon à récupérer ou à déposer, le mouvement est supprimé. A l'ajout du mouvement, le wagon est sélectionné automatiquement parmis la liste des wagons disponibles sur le noeud cible -> comment savoir quel wagon est disponible à chaque instant ? Le mouvement doit être supprimé au fur et à mesure.
+## Refonte de l'algorithme
+- Le déplacement est réalisé instant par instant, mais certaines lignes peuvent être "réservées" et bloquées par des motrices lorsqu'elles calculent leur itinéraire.
+- La sélection du lot à récupérer une fois un noeud atteint peut être réalisée en considérant l'ordre d'arrivée sur le noeud (FIFO, LIFO, ou sélection particulière).
 
-- Distinguer dans la résolution les différents noeuds pour en définir la capacité -> ou alors, définir la capacité comme attribut supplémentaire de noeud à la construction du graphe.
+
+## TODO - développement
 - Intégrer des contraintes de blocage temporaire ou permanente du réseau pour certaines motrices, sur certains arcs, à des instants donnés. Adapter le processus de rechercher du plus court chemin pour éviter ces arcs. Dans l'ensemble, faire en sorte que le réseau soit dynamique.
 - Afficher les solutions et leur évolution. Faire en sorte d'afficher le graphe en respectant ls positions géographiques pour les noeuds. (from folium.plugins import TimestampedGeoJson)
-- Ajouter des capacités max en terme de wagons et de motrices dans les gares. Augmenter les coûts logistiques si ces capacités ne sont pas respectées.
+- Augmenter les coûts logistiques si les capacités ne sont pas respectées.
 - Construire les premières expériences. Chercher des informations économiques pour construire une carnet de commandes (si possible).
 
 ### Bonus
