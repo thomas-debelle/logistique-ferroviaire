@@ -26,7 +26,7 @@ class Config:
         self.mutpb = 0.1
 
         self.cheminGraphe = 'graphe_ferroviaire.graphml'
-        self.nbMvtMax = 20                          # Nom de mouvements max par motrice dans une solution
+        self.nbMvtParMot = 20                          # Nom de mouvements max par motrice dans une solution
         self.lambdaTempsAttente = 3.0               # Paramètre lambda de la loi exponentielle utilisée pour générer les temps d'attente dans les mutations
 
 class Motrice:
@@ -81,12 +81,12 @@ class TypeMouvement(Enum):
         return self.__str__()
 
 class Mouvement:
-    def __init__(self, typeMouvement: TypeMouvement, param):
-        self.typeMouvement = typeMouvement
+    def __init__(self, type: TypeMouvement, param):
+        self.type = type
         self.param = param
 
     def __str__(self):
-        return f'({self.typeMouvement.name}, {self.param})'
+        return f'({self.type.name}, {self.param})'
     
     def __repr__(self):
         return self.__str__()
@@ -168,22 +168,48 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         """
         Génère aléatoirement une solution sous la forme d'un individu. 
         """
-        ind = [None] * len(probleme.motrices) * config.nbMvtMax         # Un individu est une liste concaténée des mouvements successifs de toutes les motrices
+        ind = [None] * len(probleme.motrices) * config.nbMvtParMot         # Un individu est une liste concaténée des mouvements successifs de toutes les motrices
         return creator.Individual(ind)
-    
-    def muter_individu(ind):
-        # Sélection d'une motrice
-        motNum = random.choice(range(len(probleme.motrices)))
-        mot = probleme.motrices[motNum]
 
-        # Comptage des mouvements de la motrice
-        posMvtsMot = motNum * config.nbMvtMax                           # Position dans l'individu du premier mouvement rattaché à la motrice
+    def compter_mvt_motrice(ind, motNum: int):
+        """
+        Compte les mouvements de la motrice numéro 'motNum'.
+        """
         cmptMvt = 0
-        while ind[posMvtsMot + cmptMvt] and cmptMvt < config.nbMvtMax:
+        while ind[motNum * config.nbMvtParMot  + cmptMvt] and cmptMvt < config.nbMvtParMot:
             cmptMvt += 1
+        return cmptMvt
+    
+    def reparer_individu(ind):
+        """
+        Réorganise les mouvements et regroupe les attentes.
+        """
+        for motNum in range(len(probleme.motrices)):
+            debutMvts = motNum * config.nbMvtParMot     # Position dans l'individu du début des mvts rattachés à la motrice
+
+            # Regroupement des attentes
+            for pos in range(config.nbMvtParMot-1):
+                if (ind[debutMvts + pos] and ind[debutMvts + pos + 1] 
+                    and ind[debutMvts + pos].type == TypeMouvement.Attendre 
+                    and ind[debutMvts + pos + 1].type == TypeMouvement.Attendre):
+                    ind[debutMvts + pos].param += ind[debutMvts + pos + 1].param
+                    ind[debutMvts + pos + 1] = None
+
+            # Réorganisation des mouvements
+            nonNones = [mvt for mvt in ind[debutMvts:debutMvts+config.nbMvtParMot] if mvt]
+            nones = [mvt for mvt in ind[debutMvts:debutMvts+config.nbMvtParMot] if not mvt]
+            mvtsMot = nonNones + nones                  # Reconstruction du tableau pour la motrice avec tous les None à la fin
+            ind = ind[:debutMvts] + mvtsMot + ind[debutMvts+len(mvtsMot):]       # Insertion du nouvel ordre dans l'individu
+        return creator.Individual(ind)
+
+    def muter_individu(ind):
+        # Sélection d'une motrice et comptage des mouvements
+        motNum = random.choice(range(len(probleme.motrices)))
+        debutMvts = motNum * config.nbMvtParMot         # Position dans l'individu du début des mvts rattachés à la motrice
+        cmptMvt = compter_mvt_motrice(ind, motNum)
 
         # Sélection d'une mutation
-        if cmptMvt > 0 and cmptMvt < config.nbMvtMax:
+        if cmptMvt > 0 and cmptMvt < config.nbMvtParMot:
             typeMut = random.choice(typesMutationsListe)
         elif cmptMvt == 0:
             typeMut = TypeMutation.Ajout
@@ -197,31 +223,62 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             typeMvt = random.choice(typesMouvementsListe)
             if typeMvt == TypeMouvement.Recuperer:
                 lot = random.choice(probleme.lots)
-                ind[posMvtsMot + cmptMvt] = Mouvement(typeMvt, lot)         # Ignoré si le lot n'est pas sur le même noeud que la motrice lors de l'évaluation du mouvement
+                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, lot)         # Ignoré si le lot n'est pas sur le même noeud que la motrice lors de l'évaluation du mouvement
             elif typeMvt == TypeMouvement.Deposer:
                 lot = random.choice(probleme.lots)
-                ind[posMvtsMot + cmptMvt] = Mouvement(typeMvt, lot)         # Ignoré si le lot n'est pas attaché à la motrice lors de l'évaluation du mouvement
+                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, lot)         # Ignoré si le lot n'est pas attaché à la motrice lors de l'évaluation du mouvement
             elif typeMvt == TypeMouvement.Attendre:
                 duree = ceil(np.random.exponential(scale=config.lambdaTempsAttente))
-                ind[posMvtsMot + cmptMvt] = Mouvement(typeMvt, duree)
+                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, duree)
             else: # typeMvt == TypeMouvement.Aller
                 cible = random.choice(noeudsCibles)
-                ind[posMvtsMot + cmptMvt] = Mouvement(typeMvt, cible)
+                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, cible)
         elif typeMut == TypeMutation.Suppression:
             # Suppression d'un mouvement
-            pos = random.choice(range(cmptMvt)) + posMvtsMot
+            pos = random.choice(range(cmptMvt)) + debutMvts
             ind[pos] = None
         elif typeMut == TypeMutation.Echange:
-            pos1, pos2 = random.choice(range(cmptMvt)) + posMvtsMot, random.choice(range(cmptMvt)) + posMvtsMot     # Sélection de deux positions à échanger
+            pos1, pos2 = random.choice(range(cmptMvt)) + debutMvts, random.choice(range(cmptMvt)) + debutMvts     # Sélection de deux positions à échanger
             ind[pos1], ind[pos2] = ind[pos2], ind[pos1]
 
-        return ind,     # TODO: réparer l'individu. Rassembler les temps d'attente. Décaler les mouvements pour éviter les None
+        return reparer_individu(ind), 
     
     def croiser_individus(ind1, ind2):
-        return ind1, ind2
+        enfant1 = [None] * len(probleme.motrices) * config.nbMvtParMot
+        enfant2 = [None] * len(probleme.motrices) * config.nbMvtParMot
+        
+        # Sélection d'un segment aléatoire dans chaque parent et échange
+        for motNum in range(len(probleme.motrices)):
+            cmpt1 = compter_mvt_motrice(ind1, motNum)
+            cmpt2 = compter_mvt_motrice(ind2, motNum)
+            debutMvtsMot = motNum * config.nbMvtParMot
+
+            # Dans le cas où l'un des individus n'inclut qu'un mouvement, le croisement n'est pas possible
+            if cmpt1 < 2 or cmpt2 < 2:
+                for pos in range(config.nbMvtParMot):
+                    enfant1[debutMvtsMot + pos] = ind1[debutMvtsMot + pos]
+                    enfant2[debutMvtsMot + pos] = ind2[debutMvtsMot + pos]
+                continue
+
+            # Sélection du segment
+            a1, b1 = sorted(random.sample(range(max(cmpt1, cmpt2)), 2))
+
+            # Echange des deux segments
+            for pos in range(config.nbMvtParMot):
+                if pos < a1:
+                    enfant1[debutMvtsMot + pos] = ind1[debutMvtsMot + pos]
+                    enfant2[debutMvtsMot + pos] = ind2[debutMvtsMot + pos]
+                elif pos >= a1 and pos < b1:
+                    enfant1[debutMvtsMot + pos] = ind2[debutMvtsMot + pos]
+                    enfant2[debutMvtsMot + pos] = ind1[debutMvtsMot + pos]
+                else:   # pos >= b1
+                    enfant1[debutMvtsMot + pos] = ind1[debutMvtsMot + pos]
+                    enfant2[debutMvtsMot + pos] = ind2[debutMvtsMot + pos]
+
+        return reparer_individu(ind1), reparer_individu(ind2)       # TODO: réparer l'individu
 
     def evaluer_individu(ind):
-        return (0, 0)
+        return (100, 100)
 
     # Initialisation de l'algorithme génétique
     creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))
