@@ -23,11 +23,12 @@ class Config:
         self.nbGenerations = 1000
         self.taillePopulation = 150
         self.cxpb = 0.85
-        self.mutpb = 0.1
+        self.mutpb = 0.15
 
         self.cheminGraphe = 'graphe_ferroviaire.graphml'
-        self.nbMvtParMot = 20                          # Nom de mouvements max par motrice dans une solution
-        self.lambdaTempsAttente = 3.0               # Paramètre lambda de la loi exponentielle utilisée pour générer les temps d'attente dans les mutations
+        self.nbMvtParMot = 20                           # Nom de mouvements max par motrice dans une solution
+        self.lambdaTempsAttente = 3.0                   # Paramètre lambda de la loi exponentielle utilisée pour générer les temps d'attente dans les mutations
+        self.horizonTemp = 500
 
 class Motrice:
     def __init__(self, noeudActuel: int, capacite=50, libelle='X'):
@@ -176,7 +177,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         Compte les mouvements de la motrice numéro 'motNum'.
         """
         cmptMvt = 0
-        while ind[motNum * config.nbMvtParMot  + cmptMvt] and cmptMvt < config.nbMvtParMot:
+        while not ind[motNum * config.nbMvtParMot + cmptMvt] is None and cmptMvt < config.nbMvtParMot:
             cmptMvt += 1
         return cmptMvt
     
@@ -210,14 +211,13 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
         # Sélection d'une mutation
         if cmptMvt > 0 and cmptMvt < config.nbMvtParMot:
-            typeMut = random.choice(typesMutationsListe)
+            typeMut = TypeMutation.Ajout #random.choice(typesMutationsListe)
         elif cmptMvt == 0:
             typeMut = TypeMutation.Ajout
         else: # cmptMvt >= config.nbMvtMax:
             typeMut = random.choice([TypeMutation.Echange, TypeMutation.Suppression])
 
         # Application de la mutation
-        typeMut = random.choice(typesMutationsListe) if cmptMvt > 0 else TypeMutation.Ajout
         if typeMut == TypeMutation.Ajout:
             # Construction d'un mouvement
             typeMvt = random.choice(typesMouvementsListe)
@@ -275,7 +275,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     enfant1[debutMvtsMot + pos] = ind1[debutMvtsMot + pos]
                     enfant2[debutMvtsMot + pos] = ind2[debutMvtsMot + pos]
 
-        return reparer_individu(ind1), reparer_individu(ind2)       # TODO: réparer l'individu
+        return reparer_individu(enfant1), reparer_individu(enfant2)       # TODO: réparer l'individu
 
     def evaluer_individu(ind):
         return (100, 100)

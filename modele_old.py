@@ -386,7 +386,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
         m = random.choice(idMotrices)
         pos = random.randint(0, len(sol[m])-1) if len(sol[m]) > 0 else 0
-        op = random.choice([0, 1, 2, 3]) if len(sol[m]) > 0 else 1                # Sélection d'une opération (1 si la motrice n'a aucune mission)
+        op = random.choice([0, 1, 2]) if len(sol[m]) > 0 else 1                # Sélection d'une opération (1 si la motrice n'a aucune mission)
         
         # Suppression de la mission à la position pos
         if op == 0:
@@ -406,7 +406,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
             sol[m].insert(pos, mission)
         # Echange de deux missions
-        else:   # op == 0
+        else:   # op == 2
             if len(sol[m]) > 1:
                 # Extraction de deux positions
                 autresPos = list(range(len(sol[m])))
