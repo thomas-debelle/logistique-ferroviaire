@@ -85,10 +85,10 @@ def simplifier_graphe(G, iter=100):
                 data1 = grapheSimplifie.get_edge_data(node, v1)
                 data2 = grapheSimplifie.get_edge_data(node, v2)
                 poidsTotal = data1['weight'] + data2['weight']
-                typeExploit = 'Double' if (data1['typeExploit'] == 'Double' and data2['typeExploit'] == 'Double') else 'Simple'
+                typeExploit = 'Double' if (data1['exploit'] == 'Double' and data2['exploit'] == 'Double') else 'Simple'
 
                 # Fusion des arêtes
-                grapheSimplifie.add_edge(v1, v2, weight=poidsTotal, typeExploit=typeExploit)
+                grapheSimplifie.add_edge(v1, v2, weight=poidsTotal, exploit=typeExploit)
                 noeudsASupprimer.append(node)
 
         grapheSimplifie.remove_nodes_from(noeudsASupprimer)
@@ -135,21 +135,22 @@ vitesseNominaleMax = 220        # Les lignes dont la vitesse nominale max est su
 rayonRaccordements = 400        # Rayon de recherche pour raccorder les extrémités des lignes.
 statutsLigneAutorises = ['Exploitée', 'Transférée en voie de service']      # Statut des lignes pouvant être ajoutées au graphe
 exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # Type d'exploitation en voies doubles
+nbCarIndex = 6               # Nombre de caractères de l'index
 
 #lonMin = -90
 #lonMax = 90
 #latMin = -90
 #latMax = 90
 # Coordonnées de la Bretagne (pour les tests)
-#lonMin = -4.70         
-#lonMax = -1.169
-#latMin = 46.68
-#latMax = 49.00
+lonMin = -4.70         
+lonMax = -1.169
+latMin = 46.68
+latMax = 49.00
 # Coordonnées de l'Auvergne-Rhône-Alpes
-lonMin = 2.06  
-lonMax = 7.68 
-latMin = 44.39 
-latMax = 46.78 
+#lonMin = 2.06  
+#lonMax = 7.68 
+#latMin = 44.39 
+#latMax = 46.78 
 
 
 
@@ -171,6 +172,8 @@ dfITE['GARE'] = dfITE['GARE'].fillna('')
 graphe = nx.Graph()
 segments = []
 libellesSegments = []
+indexNoeuds = set()             # Collection des index utilisés pour les noeuds identifiés (tous les types autres que noeuds de ligne)
+
 for _, ligne in dfLignes.iterrows():
     # Extraction de la vitesse
     vMax = ligne['V_MAX']
@@ -203,37 +206,48 @@ for _, ligne in dfLignes.iterrows():
                 poids = (dist / vMax) * 60      # Temps de parcours estimé en minutes
                 exploit = 'Double' if ligne['EXPLOIT'] in exploitationsDoubles else 'Simple'
 
-                graphe.add_node(p1, typeNoeud='Ligne', nomNoeud="")
+                graphe.add_node(p1, typeNoeud='Ligne')
                 graphe.add_node(p2, typeNoeud='Ligne')
-                graphe.add_edge(p1, p2, weight=poids, typeExploit=exploit)
+                graphe.add_edge(p1, p2, weight=poids, exploit=exploit)
 
-# Ajout des autres noeuds
+# Création de l'index pour les noeuds identifiés
+indexNoeud = 1
+
+# Ajout des noeuds de gare
 for _, gare in dfGares.iterrows():
     coords = gare['C_GEO'].split(',')
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax) or gare['FRET'] != 'O':
         continue
-    graphe.add_node(coords, typeNoeud='Gare', libelleNoeud=gare['LIBELLE'])
+    graphe.add_node(coords, index=indexNoeud, type='Gare', libelle=gare['LIBELLE'])
+    indexNoeud += 1
 
+# Ajout des noeuds de triage
 for _, triage in dfTriages.iterrows():
     coords = triage['C_GEO'].split(',')
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, typeNoeud='Triage', libelleNoeud=triage['LIBELLE'])     # Si une gare et un triage sont à la même position, le triage prend le dessus.
+    graphe.add_node(coords, index=indexNoeud, type='Triage', libelle=triage['LIBELLE'])     # Si une gare et un triage sont à la même position, le triage prend le dessus.
+    indexNoeud += 1
 
+# Ajout des noeuds d'ITE
 for _, ite in dfITE.iterrows():
     coords = ite['C_GEO'].split(',')
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, typeNoeud='ITE', libelleNoeud=ite['GARE'])
+    graphe.add_node(coords, index=indexNoeud, type='ITE', libelle=ite['GARE'])
+    indexNoeud += 1
 
+# Ajout des noeuds de chantier
 for _, chantier in dfChantiers.iterrows():
     coords = (float(chantier['Latitude']), float(chantier['Longitude']))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, typeNoeud='Chantier', libelleNoeud=chantier['VILLE'])
+    graphe.add_node(coords, index=indexNoeud, type='Chantier', libelle=chantier['VILLE'].capitalize())
+    indexNoeud += 1
+
 
 # Construction du KDTree associé aux noeuds du graphe
 correspondanceXYNoeud = {}
@@ -263,7 +277,7 @@ for segment in segments:
             eviterNoeudsAccessible=True, 
             typeNoeud='Ligne')          # On ne relie pas les extrémités à des ITE ou des triages, car la ligne pourrait alors ne pas être raccordée correctement
         if noeudProche:
-            graphe.add_edge(extremite, noeudProche, weight=0, typeExploit='Double')       # Le raccordement étant théorique, on considère qu'il est de poids nul et à double sens.
+            graphe.add_edge(extremite, noeudProche, weight=0, exploit='Double')       # Le raccordement étant théorique, on considère qu'il est de poids nul et à double sens.
 
 # Raccordement des autres noeuds
 for noeud in graphe.nodes:
@@ -284,7 +298,7 @@ for noeud in graphe.nodes:
                 eviterNoeudsAccessible=True
             )
             if noeudProche:
-                graphe.add_edge(noeud, noeudProche, weight=0, typeExploit='Double')           # Poids nul car on suppose un raccordement direct
+                graphe.add_edge(noeud, noeudProche, weight=0, exploit='Double')           # Poids nul car on suppose un raccordement direct
 
 
 # Application des simplifications
@@ -317,13 +331,13 @@ for u, v, data in graphe.edges(data=True):
         color="red",
         weight=2,
         opacity=0.6,
-        tooltip=f"<b>Régiment d'exploitation</b> : {data.get("typeExploit", 'Double')}<br><b>Temps de parcours</b> : {round(data['weight'], 2)} min"
+        tooltip=f"<b>Régiment d'exploitation</b> : {data.get("exploit", 'Double')}<br><b>Temps de parcours</b> : {round(data['weight'], 2)} min"
     ).add_to(map)
 
 # Ajout des nœuds selon leur type
 for noeud, data in graphe.nodes(data=True):
     lat, lon = noeud
-    typeNoeud = data.get("typeNoeud", 'Ligne')
+    typeNoeud = data.get("type", 'Ligne')
 
     radius = 3
     if typeNoeud == 'Ligne':
@@ -349,7 +363,7 @@ for noeud, data in graphe.nodes(data=True):
         fill=True,
         fill_color=color,
         fill_opacity=0.8,
-        tooltip=str(typeNoeud + ' - ' + data.get("libelleNoeud", ""))
+        tooltip=(str(f'[{str(data.get("index", "")).zfill(nbCarIndex)}] ' + typeNoeud + ' - ' + data.get("libelle", "")) if typeNoeud != 'Ligne' else 'Noeud')
     ).add_to(map)
 
 # Exportation de la carte et du graphe
