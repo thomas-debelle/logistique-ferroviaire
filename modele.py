@@ -29,8 +29,13 @@ class Config:
         self.cheminGraphe = 'graphe_ferroviaire.graphml'
         self.nbMvtParMot = 20                           # Nom de mouvements max par motrice dans une solution
         self.lambdaTempsAttente = 3.0                   # Paramètre lambda de la loi exponentielle utilisée pour générer les temps d'attente dans les mutations
-        self.horizonTemp = 500
         self.ecartementMinimal = 8                      # Ecartement minimal (en min) entre deux trains qui se suivent
+        self.tempsAttelage = 10                         # Temps de manoeuvre pour l'attelage
+        self.tempsDesattelage = 5                       # Temps de manoeuvre pour le désattelage
+
+        self.horizonTemp = 500
+        self.coeffMvtInutiles = 1.0                     # Coefficient appliqué au coût des mouvements inutiles
+
 
 class Motrice:
     def __init__(self, noeudOrigine: int, capacite=50, libelle='X'):
@@ -341,12 +346,18 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         return reparer_individu(enfant1), reparer_individu(enfant2)
 
     def evaluer_individu(ind):
-        numMvtActuels = [0] * len(probleme.motrices)                            # Indices de mouvements actuels pour chaque motrice
-        derniersNoeuds = [0] * len(probleme.motrices)                           # Index du dernier noeud visité par chaque motrice
+        # Variables pour la simulation
+        numMvtActuels = [0] * len(probleme.motrices)                            # Indice du mouvement actuel pour chaque motrice
+        derniersNoeudsMots = [0] * len(probleme.motrices)                       # Index du dernier noeud visité pour chaque motrice. Motrices indexées avec des entiers.
+        tempsAttenteMots = [0] * len(probleme.motrices)                         # Temps d'attente restant pour chaque motrice
+
+        derniersNoeudsLots = dict()                                             # Index du dernier noeud visité pour chaque lot. Lots indexés avec leurs références.
+        attelages = dict()                                                      # Motrices d'attelage de chaque lot 
+
         itinerairesActuels = [None] * len(probleme.motrices)                    # Itinéraires suivis actuellement pour chaque motrice
         blocagesItineraires = []                                                # Blocages générés par les itinéraires
-        tempsAttente = [0] * len(probleme.motrices)                             # Temps d'attente restant pour chaque motrice
 
+        # Fonction pour la vérification des arcs bloqués
         def est_arc_disponible(u, v, t):
             # Vérification des blocages du problème
             for sillon in probleme.blocages:
@@ -356,23 +367,26 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             for sillon in blocagesItineraires:
                 if sillon.est_dans_sillon(u, v, t):
                     return False
-            pass            # TODO: Distinguer les blocages sur voie simple et sur voie double
             return True
         
         # Initialisation des derniers noeuds
         numMot = 0
         for mot in probleme.motrices:
-            derniersNoeuds[numMot] = mot.noeudOrigine
+            derniersNoeudsMots[numMot] = mot.noeudOrigine
             numMot += 1
+        for lot in probleme.lots:
+            derniersNoeudsLots[lot] = lot.noeudOrigine
 
         # Simulation
+        objDistance = 0
+        objCoutsLogistiques = 0
         for t in range(config.horizonTemp):
             # TODO: supprimer progressivement tous les blocages expirés (une fois tous les n instants)
 
             for numMot in range(len(probleme.motrices)):
                 # Traitement des temps d'attente
-                if tempsAttente[numMot] > 0:
-                    tempsAttente[numMot] -= 1
+                if tempsAttenteMots[numMot] > 0:
+                    tempsAttenteMots[numMot] -= 1
                     continue
 
                 # Extraction et vérification du mouvement actuel
@@ -383,7 +397,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
                 # Génération d'un itinéraire
                 if not itinerairesActuels[numMot]:
-                    itineraire = dijkstra_temporel(probleme.graphe, derniersNoeuds[numMot], mvtActuel.noeud, t, est_arc_disponible)
+                    itineraire = dijkstra_temporel(probleme.graphe, derniersNoeudsMots[numMot], mvtActuel.noeud, t, est_arc_disponible)
                     itinerairesActuels[numMot] = itineraire
                     
                     # Blocage des arcs de l'itinéraire
@@ -407,24 +421,37 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 for i in range(len(itineraire)):
                     if t < itineraire[i][1]:                # Parcoure toutes les étapes de l'itinéraire jusqu'à trouver une étape qui n'a pas encore été atteinte 
                         itineraireTermine = False
-                        derniersNoeuds[numMot] = itineraire[i-1][0]
+                        derniersNoeudsMots[numMot] = itineraire[i-1][0]     # TODO: mettre à jour les positions pour les lots attelés à la motrice
                         break
 
                 # Fin du traitement si l'itinéraire n'est pas terminé
                 if not itineraireTermine:
                     continue
-                derniersNoeuds[numMot] = itineraire[-1][0]
+                derniersNoeudsMots[numMot] = itineraire[-1][0]
+                dureeItineraire = round(itinerairesActuels[numMot][-1][1] - itinerairesActuels[numMot][0][1])      # Calcule la durée totale du parcours avant de supprimer l'itinéraire
                 itinerairesActuels[numMot] = None
 
-                # Traitement de l'action à destination      # TODO: sanctionner les récups et les déposes inutiles dans les coûts logistiques (en ajoutant la distance parcourue inutilement)
+                # Traitement de l'action à destination
                 if mvtActuel.type == TypeMouvement.Recuperer:
-                    pass
+                    lot = mvtActuel.param
+                    if not attelages.get(lot, None) and derniersNoeudsMots[numMot] == derniersNoeudsLots[lot]:
+                        attelages[lot] = numMot
+                        tempsAttenteMots[numMot] += config.tempsAttelage
+                    else:
+                        objCoutsLogistiques += dureeItineraire * config.coeffMvtInutiles          # Sanction des mouvements inutiles (dépose sans que le wagon soit attelé)
                 elif mvtActuel.type == TypeMouvement.Deposer:
-                    pass
+                    lot = mvtActuel.param
+                    if attelages.get(lot, None) == numMot:
+                        attelages[lot] = None
+                        tempsAttenteMots[numMot] += config.tempsDesattelage     # TODO: bloquer aussi le lot pendant la durée du désattelage
+                    else:
+                        objCoutsLogistiques += dureeItineraire * config.coeffMvtInutiles          # Sanction des mouvements inutiles (dépose sans que le wagon soit attelé)
                 elif mvtActuel.type == TypeMouvement.Attendre:
-                    tempsAttente[numMot] += mvtActuel.param
+                    tempsAttenteMots[numMot] += mvtActuel.param
+
+            # TODO : ajouter la validation des requêtes pour chaque lot
                 
-        return (100, 100)
+        return (objDistance, objCoutsLogistiques)
             
 
     # Initialisation de l'algorithme génétique
@@ -492,7 +519,6 @@ def main():
     probleme = Probleme(graphe)
     probleme.motrices = [Motrice(183)]
     probleme.lots = [Lot(222, 277, 0, 1000)]
-    probleme.blocages.append(Sillon(34, 33, 0, 1000))
 
     # Résolution du problème
     resoudre_probleme(config, probleme)
