@@ -2,6 +2,7 @@ import networkx as nx
 from enum import Enum
 from typing import Dict, List
 from deap import base, creator, tools, algorithms
+import heapq
 import random
 import numpy as np
 import logging
@@ -29,10 +30,11 @@ class Config:
         self.nbMvtParMot = 20                           # Nom de mouvements max par motrice dans une solution
         self.lambdaTempsAttente = 3.0                   # Paramètre lambda de la loi exponentielle utilisée pour générer les temps d'attente dans les mutations
         self.horizonTemp = 500
+        self.ecartementMinimal = 8                      # Ecartement minimal (en min) entre deux trains qui se suivent
 
 class Motrice:
-    def __init__(self, noeudActuel: int, capacite=50, libelle='X'):
-        self.noeudActuel = noeudActuel
+    def __init__(self, noeudOrigine: int, capacite=50, libelle='X'):
+        self.noeudOrigine = noeudOrigine
         self.capacite = capacite
         self.libelle = libelle
 
@@ -55,10 +57,31 @@ class Lot:
         self.debutCommande = debutCommande
         self.finCommande = finCommande
         self.taille = taille
-        self.noeudActuel = noeudOrigine
 
     def __str__(self):
         return f'(Lot {self.noeudOrigine}->{self.noeudDestination})'
+    
+    def __repr__(self):
+        return self.__str__()
+    
+class Sillon:
+    """
+    Représentation simplifiée d'un sillon ferroviaire.
+    """
+    def __init__(self, noeudDebut, noeudFin, tempsDebut, tempsFin):
+        """
+        Le temps début est inclus, le temps fin est exclus.
+        """
+        self.noeudDebut = noeudDebut
+        self.noeudFin = noeudFin
+        self.tempsDebut = tempsDebut
+        self.tempsFin = tempsFin
+
+    def est_dans_sillon(self, u, v, t):
+        return (u == self.noeudDebut and v == self.noeudFin and t >= self.tempsDebut and t < self.tempsFin)
+    
+    def __str__(self):
+        return f'({self.noeudDebut}, {self.noeudFin}, {self.tempsDebut}, {self.tempsFin})'
     
     def __repr__(self):
         return self.__str__()
@@ -68,12 +91,12 @@ class Probleme:
         self.graphe = graphe
         self.motrices = []
         self.lots = []
+        self.blocages = []              # Liste des sillons bloqués (par exemple, par d'autres compagnies ferroviaires)
 
 class TypeMouvement(Enum):
     Recuperer = 0
     Deposer = 1
     Attendre = 2
-    Aller = 3
 
     def __str__(self):
         return self.name
@@ -82,12 +105,13 @@ class TypeMouvement(Enum):
         return self.__str__()
 
 class Mouvement:
-    def __init__(self, type: TypeMouvement, param):
+    def __init__(self, type: TypeMouvement, noeud: int, param):
         self.type = type
+        self.noeud = noeud
         self.param = param
 
     def __str__(self):
-        return f'({self.type.name}, {self.param})'
+        return f'({self.type.name}, {self.noeud}, {self.param})'
     
     def __repr__(self):
         return self.__str__()
@@ -149,13 +173,54 @@ def initialiser_logs(config: Config):
             info(f"Suppression de {fichier}.")
 
 def importer_graphe(cheminGraphe):
-    return nx.read_graphml(cheminGraphe)
+    grapheOriginal = nx.read_graphml(cheminGraphe)
+    grapheConverti = nx.DiGraph() if grapheOriginal.is_directed() else nx.Graph()       # Recréation du graphe avec identifiants de nœuds convertis en int
+    
+    # Copie des nœuds
+    for noeud in grapheOriginal.nodes:
+        grapheConverti.add_node(int(noeud), **grapheOriginal.nodes[noeud])
+
+    # Copie des arêtes avec conversion des extrémités
+    for u, v, data in grapheOriginal.edges(data=True):
+        grapheConverti.add_edge(int(u), int(v), **data)
+
+    return grapheConverti
+
 
 def extraire_noeud(graphe: nx.Graph, index: int):
     """
     Recherche le noeud correspondant à l'index passé en argument dans le graphe.
     """
     return next((n for n, d in graphe.nodes(data=True) if d.get('index', 0) == index), None)
+
+def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):
+    """
+    Implémentation personnalité de Djikstra permettant de filtrer les arcs non-disponibles à chaque instant.
+    Le filtre est une fonction prenant en paramètre (u, v, t) et retournant True ou False (arc disponible ou non).
+    Chaque étape de l'itinéraire retourné est un tuple sous la forme (noeud, instant).
+    """
+    queue = [(instant, origine, [])]      # File de priorité : (tempsCumul, noeudActuel, chemin)
+    visites = {}
+
+    while queue:
+        instantActuel, noeudActuel, chemin = heapq.heappop(queue)
+
+        if (noeudActuel in visites) and (instantActuel >= visites[noeudActuel]):
+            continue
+        visites[noeudActuel] = instantActuel
+
+        chemin = chemin + [(noeudActuel, instantActuel)]
+
+        if noeudActuel == dest:
+            return chemin
+
+        for successeur in graphe[noeudActuel]:
+            poids = graphe[noeudActuel][successeur]['weight']
+            if filtre and filtre(noeudActuel, successeur, instantActuel):
+                heapq.heappush(queue, (instantActuel + poids, successeur, chemin))
+
+    return None                     # Aucun chemin trouvé
+
 
 def resoudre_probleme(config: Config, probleme: Probleme):
     """
@@ -165,13 +230,6 @@ def resoudre_probleme(config: Config, probleme: Probleme):
     typesMutationsListe = list(TypeMutation)
     noeudsCibles = [n for n, d in probleme.graphe.nodes(data=True) if d.get('capacite') > 0]        # Liste des noeuds pouvant être utilisés comme cible pour un mouvement de déplacement
 
-    def generer_individu():
-        """
-        Génère aléatoirement une solution sous la forme d'un individu. 
-        """
-        ind = [None] * len(probleme.motrices) * config.nbMvtParMot         # Un individu est une liste concaténée des mouvements successifs de toutes les motrices
-        return creator.Individual(ind)
-
     def compter_mvt_motrice(ind, motNum: int):
         """
         Compte les mouvements de la motrice numéro 'motNum'.
@@ -180,6 +238,13 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         while not ind[motNum * config.nbMvtParMot + cmptMvt] is None and cmptMvt < config.nbMvtParMot:
             cmptMvt += 1
         return cmptMvt
+    
+    def generer_individu():
+        """
+        Génère aléatoirement une solution sous la forme d'un individu. 
+        """
+        ind = [None] * len(probleme.motrices) * config.nbMvtParMot         # Un individu est une liste concaténée des mouvements successifs de toutes les motrices
+        return creator.Individual(ind)
     
     def reparer_individu(ind):
         """
@@ -211,7 +276,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
         # Sélection d'une mutation
         if cmptMvt > 0 and cmptMvt < config.nbMvtParMot:
-            typeMut = TypeMutation.Ajout #random.choice(typesMutationsListe)
+            typeMut = random.choice(typesMutationsListe)
         elif cmptMvt == 0:
             typeMut = TypeMutation.Ajout
         else: # cmptMvt >= config.nbMvtMax:
@@ -221,18 +286,16 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         if typeMut == TypeMutation.Ajout:
             # Construction d'un mouvement
             typeMvt = random.choice(typesMouvementsListe)
+            cible = random.choice(noeudsCibles)
             if typeMvt == TypeMouvement.Recuperer:
                 lot = random.choice(probleme.lots)
-                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, lot)         # Ignoré si le lot n'est pas sur le même noeud que la motrice lors de l'évaluation du mouvement
+                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, cible, lot)         # Ignoré si le lot n'est pas sur le même noeud que la motrice lors de l'évaluation du mouvement
             elif typeMvt == TypeMouvement.Deposer:
                 lot = random.choice(probleme.lots)
-                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, lot)         # Ignoré si le lot n'est pas attaché à la motrice lors de l'évaluation du mouvement
-            elif typeMvt == TypeMouvement.Attendre:
+                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, cible, lot)         # Ignoré si le lot n'est pas attaché à la motrice lors de l'évaluation du mouvement
+            else: #typeMvt == TypeMouvement.Attendre
                 duree = ceil(np.random.exponential(scale=config.lambdaTempsAttente))
-                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, duree)
-            else: # typeMvt == TypeMouvement.Aller
-                cible = random.choice(noeudsCibles)
-                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, cible)
+                ind[debutMvts + cmptMvt] = Mouvement(typeMvt, cible, duree)
         elif typeMut == TypeMutation.Suppression:
             # Suppression d'un mouvement
             pos = random.choice(range(cmptMvt)) + debutMvts
@@ -275,10 +338,94 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     enfant1[debutMvtsMot + pos] = ind1[debutMvtsMot + pos]
                     enfant2[debutMvtsMot + pos] = ind2[debutMvtsMot + pos]
 
-        return reparer_individu(enfant1), reparer_individu(enfant2)       # TODO: réparer l'individu
+        return reparer_individu(enfant1), reparer_individu(enfant2)
 
     def evaluer_individu(ind):
+        numMvtActuels = [0] * len(probleme.motrices)                            # Indices de mouvements actuels pour chaque motrice
+        derniersNoeuds = [0] * len(probleme.motrices)                           # Index du dernier noeud visité par chaque motrice
+        itinerairesActuels = [None] * len(probleme.motrices)                    # Itinéraires suivis actuellement pour chaque motrice
+        blocagesItineraires = []                                                # Blocages générés par les itinéraires
+        tempsAttente = [0] * len(probleme.motrices)                             # Temps d'attente restant pour chaque motrice
+
+        def est_arc_disponible(u, v, t):
+            # Vérification des blocages du problème
+            for sillon in probleme.blocages:
+                if sillon.est_dans_sillon(u, v, t):
+                    return False
+            # Vérification des blocages ajoutés par les itinéraires
+            for sillon in blocagesItineraires:
+                if sillon.est_dans_sillon(u, v, t):
+                    return False
+            pass            # TODO: Distinguer les blocages sur voie simple et sur voie double
+            return True
+        
+        # Initialisation des derniers noeuds
+        numMot = 0
+        for mot in probleme.motrices:
+            derniersNoeuds[numMot] = mot.noeudOrigine
+            numMot += 1
+
+        # Simulation
+        for t in range(config.horizonTemp):
+            # TODO: supprimer progressivement tous les blocages expirés (une fois tous les n instants)
+
+            for numMot in range(len(probleme.motrices)):
+                # Traitement des temps d'attente
+                if tempsAttente[numMot] > 0:
+                    tempsAttente[numMot] -= 1
+                    continue
+
+                # Extraction et vérification du mouvement actuel
+                numMvtActuel = numMvtActuels[numMot]
+                mvtActuel = ind[numMvtActuel]
+                if not mvtActuel:
+                    continue
+
+                # Génération d'un itinéraire
+                if not itinerairesActuels[numMot]:
+                    itineraire = dijkstra_temporel(probleme.graphe, derniersNoeuds[numMot], mvtActuel.noeud, t, est_arc_disponible)
+                    itinerairesActuels[numMot] = itineraire
+                    
+                    # Blocage des arcs de l'itinéraire
+                    for i in range(len(itineraire)-1):
+                        # Extraction des information
+                        u = itineraire[i]
+                        v = itineraire[i+1]
+                        debutParcours = round(u[1])
+                        finParcours = round(v[1])
+
+                        # Ajout des sillons bloqués
+                        blocagesItineraires.append(Sillon(u[0], v[0], debutParcours, debutParcours+config.ecartementMinimal))
+                        if probleme.graphe.edges[u[0], v[0]]['exploit'] == 'Simple':
+                            blocagesItineraires.append(Sillon(v[0], u[0], debutParcours, finParcours+config.ecartementMinimal))
+
+                pass            # TODO: Traiter les cas où la durée est à 0, et où aucun itinéraire n'est disponible : passage immédiatement au mouvement suivant
+
+                # Calcul de l'avancée
+                itineraireTermine = True
+                itineraire = itinerairesActuels[numMot]
+                for i in range(len(itineraire)):
+                    if t < itineraire[i][1]:                # Parcoure toutes les étapes de l'itinéraire jusqu'à trouver une étape qui n'a pas encore été atteinte 
+                        itineraireTermine = False
+                        derniersNoeuds[numMot] = itineraire[i-1][0]
+                        break
+
+                # Fin du traitement si l'itinéraire n'est pas terminé
+                if not itineraireTermine:
+                    continue
+                derniersNoeuds[numMot] = itineraire[-1][0]
+                itinerairesActuels[numMot] = None
+
+                # Traitement de l'action à destination      # TODO: sanctionner les récups et les déposes inutiles dans les coûts logistiques (en ajoutant la distance parcourue inutilement)
+                if mvtActuel.type == TypeMouvement.Recuperer:
+                    pass
+                elif mvtActuel.type == TypeMouvement.Deposer:
+                    pass
+                elif mvtActuel.type == TypeMouvement.Attendre:
+                    tempsAttente[numMot] += mvtActuel.param
+                
         return (100, 100)
+            
 
     # Initialisation de l'algorithme génétique
     creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))
@@ -345,6 +492,7 @@ def main():
     probleme = Probleme(graphe)
     probleme.motrices = [Motrice(183)]
     probleme.lots = [Lot(222, 277, 0, 1000)]
+    probleme.blocages.append(Sillon(34, 33, 0, 1000))
 
     # Résolution du problème
     resoudre_probleme(config, probleme)

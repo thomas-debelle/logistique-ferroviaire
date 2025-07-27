@@ -157,6 +157,7 @@ capacitesParType = {            # Capacité par défaut, en nombre d'éléments 
     'ITE': 50,
     'Triage': 1000
 }           # A l'avenir, permettre à l'utilisateur de configurer noeud par noeud les capacités
+arrondirDurees = True
 
 #lonMin = -90
 #lonMax = 90

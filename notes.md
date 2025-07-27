@@ -1,10 +1,9 @@
 ## Refonte de l'algorithme
-- Le déplacement est réalisé instant par instant, mais certaines lignes peuvent être "réservées" et bloquées par des motrices lorsqu'elles calculent leur itinéraire.
-- La sélection du lot à récupérer une fois un noeud atteint peut être réalisée en considérant l'ordre d'arrivée sur le noeud (FIFO, LIFO, ou sélection particulière).
+- Il faudra peut être générer une solution initiale (proposer)
+- Comment guider la résolution tout en gardant un format de solutions "organiques" ? Pénaliser les solutions stupides ? Sinon, revenir au format précédent, et réfléchir à la manière dont les motrices pourraient se coordonner.
 
 
 ## TODO - développement
-- Intégrer des contraintes de blocage temporaire ou permanente du réseau pour certaines motrices, sur certains arcs, à des instants donnés. Adapter le processus de rechercher du plus court chemin pour éviter ces arcs. Dans l'ensemble, faire en sorte que le réseau soit dynamique.
 - Afficher les solutions et leur évolution. Faire en sorte d'afficher le graphe en respectant ls positions géographiques pour les noeuds. (from folium.plugins import TimestampedGeoJson)
 - Augmenter les coûts logistiques si les capacités ne sont pas respectées.
 - Construire les premières expériences. Chercher des informations économiques pour construire une carnet de commandes (si possible).
