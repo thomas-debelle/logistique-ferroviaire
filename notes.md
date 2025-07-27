@@ -1,8 +1,8 @@
 ## Refonte de l'algorithme
-- Ajouter un troisième objectif de pénalisation des solutions stupides, pour encourager la recherche de solution utiles.
-    - Y pénaliser les attentes alors que certains lots n'ont pas été livrés.
-    - Ajouter ponctuellement des heuristiques simples pour orienter la solution.
+- Revoir le processus de mutation et essayer de faire fonctionner le processus.
+- Rétablir les mouvements d'attente
 - Ajouter une option de retour à la base pour certains motrices (favorisera la coopération).
+- Vérifier que les identifiants des motrices soient uniques.
 
 
 ## TODO - développement
