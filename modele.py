@@ -35,9 +35,13 @@ class Config:
         self.tempsDesattelage = 5                       # Temps de manoeuvre pour le désattelage
 
         self.horizonTemp = 500
+        self.coeffDeplacements = 1.0                    # Coefficient appliqué à l'objectif de déplacement
         self.coeffMvtInutiles = 1.0                     # Coefficient appliqué aux pénalités de mouvements inutiles
+        self.coutMvtInutiles = 10                        # Coût minimum appliqué pour chaque mouvement inutile
         self.coeffRetard = 1.0                          # Coefficient appliqué aux pénalités de retard à l'arrivée
-        self.coeffNonLivres = 10.0                      # Coefficient appliqué aux pénalités
+        self.coeffNonLivres = 10.0                      # Coefficient appliqué aux pénalités pour les livraisons non réalisées
+        self.coeffDepassementCapaNoeud = 1.0            # Coefficient appliqué aux pénalités pour les dépassements de capacité sur les noeuds.  # TODO: à utiliser
+        self.coeffDepassementCapaMotrice = 1.0          # Coefficient appliqué aux pénalités pour les dépassements de capacité des motrices.
 
 
 class Motrice:
@@ -363,6 +367,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         numMvtActuels = [0] * len(probleme.motrices)                            # Indice du mouvement actuel pour chaque motrice
         derniersNoeudsMots = [0] * len(probleme.motrices)                       # Index du dernier noeud visité pour chaque motrice. Motrices indexées par leur position dans ind.
         tempsAttenteMots = [0] * len(probleme.motrices)                         # Temps d'attente restant pour chaque motrice
+        nbWagonsAtteles = [0] * len(probleme.motrices)                          # Nombre de wagons attelés pour chaque motrice
 
         derniersNoeudsLots = dict()                                             # Index du dernier noeud visité pour chaque lot. Lots indexés avec leurs références.
         attelages = dict()                                                      # Motrice d'attelage de chaque lot. Motrice indexée par sa position dans ind. 
@@ -396,7 +401,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             derniersNoeudsLots[lot] = lot.noeudOrigine
 
         # Simulation
-        objDistance = 0
+        objDeplacement = 0
         objCoutsLogistiques = 0
         for t in range(config.horizonTemp):
             # TODO: supprimer progressivement tous les blocages expirés (une fois tous les n instants)
@@ -448,22 +453,35 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 dureeItineraire = round(itinerairesActuels[numMot][-1][1] - itinerairesActuels[numMot][0][1])      # Calcule la durée totale du parcours avant de supprimer l'itinéraire
                 itinerairesActuels[numMot] = None
 
-                # Traitement de l'action à destination
+                # Application de la pénalité de déplacement
+                objDeplacement += dureeItineraire * config.coeffDeplacements
+
+                # Action d'attelage
                 if mvtActuel.type == TypeMouvement.Recuperer:
                     lot = mvtActuel.param
                     if not attelages.get(lot, None) and derniersNoeudsMots[numMot] == derniersNoeudsLots[lot] and t > lot.debutCommande:
                         attelages[lot] = numMot
                         tempsAttenteMots[numMot] += config.tempsAttelage
+
+                        # Gestion des dépassements de capacité pour les motrices
+                        nbWagonsAtteles += lot.taille
+                        capaMot = probleme.motrices[numMot].capacite
+                        if nbWagonsAtteles > capaMot:
+                            objCoutsLogistiques += (nbWagonsAtteles - capaMot) * config.coeffDepassementCapaMotrice
+
                     else:
-                        objCoutsLogistiques += dureeItineraire * config.coeffMvtInutiles        # Sanction des mouvements inutiles. La pénalité correspond au trajet parcouru.
+                        objCoutsLogistiques += config.coutMvtInutiles + dureeItineraire * config.coeffMvtInutiles        # Sanction des mouvements inutiles. La pénalité correspond au trajet parcouru.
+                # Action de désattelage
                 elif mvtActuel.type == TypeMouvement.Deposer:
                     lot = mvtActuel.param
                     if attelages.get(lot, None) == numMot:
                         attelages[lot] = None
                         derniersNoeudsLots[lot] = derniersNoeudsMots[numMot]                    # Mise à jour de la position du lot avant son désattelage
                         tempsAttenteMots[numMot] += config.tempsDesattelage                     # TODO: bloquer aussi le lot pendant la durée du désattelage
+                        nbWagonsAtteles -= lot.taille
                     else:
-                        objCoutsLogistiques += dureeItineraire * config.coeffMvtInutiles        # Sanction des mouvements inutiles. La pénalité correspond au trajet parcouru.
+                        objCoutsLogistiques += config.coutMvtInutiles + dureeItineraire * config.coeffMvtInutiles        # Sanction des mouvements inutiles. La pénalité correspond au trajet parcouru.
+                # Action d'attente
                 elif mvtActuel.type == TypeMouvement.Attendre:
                     tempsAttenteMots[numMot] += mvtActuel.param
 
@@ -493,7 +511,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     penalite = round(penalite) * config.coeffNonLivres
             objCoutsLogistiques += penalite
 
-        return (objDistance, objCoutsLogistiques)
+        return (objDeplacement, objCoutsLogistiques)
             
 
     # Initialisation de l'algorithme génétique

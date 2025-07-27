@@ -1,6 +1,5 @@
 ## Refonte de l'algorithme
-- Il faudra peut être générer une solution initiale (proposer)
-- Comment guider la résolution tout en gardant un format de solutions "organiques" ? Pénaliser les solutions stupides ? Sinon, revenir au format précédent, et réfléchir à la manière dont les motrices pourraient se coordonner.
+- Ajouter un troisième objectif de pénalisation des solutions stupides, pour encourager la recherche de solution utiles.
 
 
 ## TODO - développement
