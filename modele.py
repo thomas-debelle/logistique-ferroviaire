@@ -37,12 +37,12 @@ class Config:
 
         self.coeffDeplacements = 1.0                    # Coefficient appliqué à l'objectif de déplacement
         self.coeffRetard = 1.0                          # Coefficient appliqué aux coûts de retard à l'arrivée
-        self.coutLotNonLivre = 1000                     # Coût d'un lot non livré
+        self.coutLotNonLivre = 1000                     # Coût de base d'un lot non livré
+        self.coeffLotNonLivre = 1.0                     # Coût supplémentaire en fonction de la distance d'un lot non livré
         self.coeffDepassementCapaNoeud = 1.0            # Coefficient appliqué aux coûts pour les dépassements de capacité sur les noeuds.  # TODO: à utiliser
         self.coeffDepassementCapaMotrice = 1.0          # Coefficient appliqué aux coûts pour les dépassements de capacité des motrices.
 
         self.penaliteMvtInutiles = 100                  # Pénalité pour chaque mouvement inutile
-        self.penaliteLotNonLivre = 100                  # Pénalité pour chaque lot non livré
 
 
 class Motrice:
@@ -398,9 +398,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             derniersNoeudsLots[lot] = lot.noeudOrigine
 
         # Simulation
-        objDeplacement = 0              # Objectif de durée de parcours pour l'ensemble des motrices
+        objImpertinence = 0             # Objectif pour la pénalisation des mouvements inutiles
         objCoutsLogistiques = 0         # Objectif de coûts d'exécution pour la solution proposée
-        objPenalisation = 0                # Objectif pour la pénalisation des mouvements inutiles
+        objDeplacement = 0              # Objectif de durée de parcours pour l'ensemble des motrices. L'objectif est neutralisé si la solution n'est pas pertinente (impertinence>0)
         for t in range(config.horizonTemp):
             # TODO: supprimer progressivement tous les blocages expirés (une fois tous les n instants)
             # Traitement des motrices
@@ -427,7 +427,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
                 # Extraction et vérification du mouvement actuel
                 numMvtActuel = numMvtActuels[numMot]
-                mvtActuel = ind[numMvtActuel]
+                mvtActuel = ind[numMot * config.nbMvtParMot + numMvtActuel]
                 if not mvtActuel:
                     continue
 
@@ -482,7 +482,8 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         if nbWagonsAtteles[numMot] > capaMot:
                             objCoutsLogistiques += (nbWagonsAtteles - capaMot) * config.coeffDepassementCapaMotrice
                     else:
-                        objPenalisation += config.penaliteMvtInutiles        # Sanction des mouvements inutiles.
+                        objImpertinence += config.penaliteMvtInutiles        # Sanction des mouvements inutiles
+                
                 # Action de désattelage
                 elif mvtActuel.type == TypeMouvement.Deposer:
                     lot = mvtActuel.param
@@ -492,10 +493,13 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         tempsAttenteMots[numMot] += config.tempsDesattelage                     # TODO: bloquer aussi le lot pendant la durée du désattelage
                         nbWagonsAtteles[numMot] -= lot.taille
                     else:
-                        objPenalisation += config.penaliteMvtInutiles        # Sanction des mouvements inutiles.
+                        objImpertinence += config.penaliteMvtInutiles        # Sanction des mouvements inutiles
+                
                 # Action d'attente
                 elif mvtActuel.type == TypeMouvement.Attendre:
                     tempsAttenteMots[numMot] += mvtActuel.param
+                    if numMvtActuel < config.nbMvtParMot-1 and ind[numMot * config.nbMvtParMot + numMvtActuel+1] is None:       # S'il n'y a pas de mouvement suivant, alors le mouvement actuel est inutile
+                        objImpertinence += config.penaliteMvtInutiles        # Sanction des mouvements inutiles
 
                 # Passage au mouvement suivant
                 numMvtActuels[numMot] += 1
@@ -511,18 +515,23 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     continue
 
                 # Application des pénalités de retard
-                if t >= lot.finCommande:
+                if t >= lot.finCommande and not lot in lotsValides:
                     objCoutsLogistiques += (lot.finCommande - t) * config.coeffRetard           # La pénalité correspond au nombre d'instants écoulé depuis la fin de la commande
                 lotsValides.add(lot)
         
 
-        # Pénalisation des lots non livrés
+        # Ajout des coûts des lots non livrés
+        solutionValide = True                   # La solution est dite valide si tous les lots sont livrés
         for lot in probleme.lots:
             if not lot in lotsValides:
-                objCoutsLogistiques += config.coutLotNonLivre
-                objPenalisation += config.penaliteLotNonLivre
+                distCommande = nx.dijkstra_path_length(probleme.graphe, derniersNoeudsLots[lot], lot.noeudDestination, 'weight')
+                distCommande = sys.maxsize if distCommande is None else distCommande
+                objCoutsLogistiques += config.coutLotNonLivre + distCommande * config.coeffLotNonLivre
+                solutionValide = False
 
-        return (0, int(objCoutsLogistiques), int(objPenalisation))
+        # Retour des objectifs
+        objDeplacement = sys.maxsize if not solutionValide else objDeplacement                 # Neutralisation de l'objectif de déplacement si la solution n'est pas valide
+        return (int(objImpertinence), int(objCoutsLogistiques), int(objDeplacement))
             
 
     # Initialisation de l'algorithme génétique
