@@ -1,5 +1,8 @@
 ## Refonte de l'algorithme
 - Ajouter un troisième objectif de pénalisation des solutions stupides, pour encourager la recherche de solution utiles.
+    - Y pénaliser les attentes alors que certains lots n'ont pas été livrés.
+    - Ajouter ponctuellement des heuristiques simples pour orienter la solution.
+- Ajouter une option de retour à la base pour certains motrices (favorisera la coopération).
 
 
 ## TODO - développement
@@ -8,7 +11,7 @@
 - Construire les premières expériences. Chercher des informations économiques pour construire une carnet de commandes (si possible).
 
 ### Bonus
-- Considérer le nombre de motrices utilisées dans le problème comme un coût logistique fixe.
+- Considérer le nombre de motrices utilisées dans le problème comme un coût logistique fixe (utile pour le finetuing).
 - Considérer le fait que l'attelage de wagon est LIFO. Augmenter les coûts logistique si le LIFO n'est pas respecté.
 
 

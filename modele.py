@@ -33,28 +33,35 @@ class Config:
         self.ecartementMinimal = 8                      # Ecartement minimal (en min) entre deux trains qui se suivent
         self.tempsAttelage = 10                         # Temps de manoeuvre pour l'attelage
         self.tempsDesattelage = 5                       # Temps de manoeuvre pour le désattelage
+        self.horizonTemp = 500                          # Horizon temporel de la simulation
 
-        self.horizonTemp = 500
         self.coeffDeplacements = 1.0                    # Coefficient appliqué à l'objectif de déplacement
-        self.coeffMvtInutiles = 1.0                     # Coefficient appliqué aux pénalités de mouvements inutiles
-        self.coutMvtInutiles = 10                        # Coût minimum appliqué pour chaque mouvement inutile
-        self.coeffRetard = 1.0                          # Coefficient appliqué aux pénalités de retard à l'arrivée
-        self.coeffNonLivres = 10.0                      # Coefficient appliqué aux pénalités pour les livraisons non réalisées
-        self.coeffDepassementCapaNoeud = 1.0            # Coefficient appliqué aux pénalités pour les dépassements de capacité sur les noeuds.  # TODO: à utiliser
-        self.coeffDepassementCapaMotrice = 1.0          # Coefficient appliqué aux pénalités pour les dépassements de capacité des motrices.
+        self.coeffRetard = 1.0                          # Coefficient appliqué aux coûts de retard à l'arrivée
+        self.coutLotNonLivre = 1000                     # Coût d'un lot non livré
+        self.coeffDepassementCapaNoeud = 1.0            # Coefficient appliqué aux coûts pour les dépassements de capacité sur les noeuds.  # TODO: à utiliser
+        self.coeffDepassementCapaMotrice = 1.0          # Coefficient appliqué aux coûts pour les dépassements de capacité des motrices.
+
+        self.penaliteMvtInutiles = 100                  # Pénalité pour chaque mouvement inutile
+        self.penaliteLotNonLivre = 100                  # Pénalité pour chaque lot non livré
 
 
 class Motrice:
-    def __init__(self, noeudOrigine: int, capacite=50, libelle='X'):
+    def __init__(self, index: int, noeudOrigine: int, capacite=50):
+        self.index = index
         self.noeudOrigine = noeudOrigine
         self.capacite = capacite
-        self.libelle = libelle
 
     def __str__(self):
-        return f'(Mot. {self.libelle})'
+        return f'(Mot. {self.index})'
     
     def __repr__(self):
         return self.__str__()
+
+    def __eq__(self, other):
+        return isinstance(other, Motrice) and self.index == other.index
+
+    def __hash__(self):
+        return hash(self.index)
 
 class Lot:
     """
@@ -75,7 +82,7 @@ class Lot:
         self.taille = taille
 
     def __str__(self):
-        return f'(Lot {self.noeudOrigine}->{self.noeudDestination})'
+        return f'(Lot {self.index})'
     
     def __repr__(self):
         return self.__str__()
@@ -90,14 +97,16 @@ class Sillon:
     """
     Représentation simplifiée d'un sillon ferroviaire.
     """
-    def __init__(self, noeudDebut, noeudFin, tempsDebut, tempsFin):
+    def __init__(self, noeudDebut, noeudFin, tempsDebut, tempsFin, motrice: Motrice=None):
         """
         Le temps début est inclus, le temps fin est exclus.
+        motrice: motrice détentrice du sillon. Laisser à None pour ne pas spécifier.
         """
         self.noeudDebut = noeudDebut
         self.noeudFin = noeudFin
         self.tempsDebut = tempsDebut
         self.tempsFin = tempsFin
+        self.motrice = motrice
 
     def est_dans_sillon(self, u, v, t):
         return (u == self.noeudDebut and v == self.noeudFin and t >= self.tempsDebut and t < self.tempsFin)
@@ -378,19 +387,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
         # Vérifie que l'individu n'est pas vide
         if not any(pos is not None for pos in ind):
-            return (sys.maxsize, sys.maxsize)
-
-        # Fonction pour la vérification des arcs bloqués
-        def est_arc_disponible(u, v, t):
-            # Vérification des blocages du problème
-            for sillon in probleme.blocages:
-                if sillon.est_dans_sillon(u, v, t):
-                    return False
-            # Vérification des blocages ajoutés par les itinéraires
-            for sillon in blocagesItineraires:
-                if sillon.est_dans_sillon(u, v, t):
-                    return False
-            return True
+            return (sys.maxsize, sys.maxsize, sys.maxsize)
         
         # Initialisation des derniers noeuds
         numMot = 0
@@ -401,12 +398,28 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             derniersNoeudsLots[lot] = lot.noeudOrigine
 
         # Simulation
-        objDeplacement = 0
-        objCoutsLogistiques = 0
+        objDeplacement = 0              # Objectif de durée de parcours pour l'ensemble des motrices
+        objCoutsLogistiques = 0         # Objectif de coûts d'exécution pour la solution proposée
+        objPenalisation = 0                # Objectif pour la pénalisation des mouvements inutiles
         for t in range(config.horizonTemp):
             # TODO: supprimer progressivement tous les blocages expirés (une fois tous les n instants)
             # Traitement des motrices
             for numMot in range(len(probleme.motrices)):
+                # Extraction des informations de la motrice
+                mot = probleme.motrices[numMot]
+
+                # Fonction pour la vérification des arcs bloqués
+                def est_arc_disponible(u, v, t):
+                    # Vérification des blocages du problème
+                    for sillon in probleme.blocages:
+                        if sillon.est_dans_sillon(u, v, t):
+                            return False
+                    # Vérification des blocages ajoutés par les itinéraires
+                    for sillon in blocagesItineraires:
+                        if sillon.est_dans_sillon(u, v, t) and sillon.motrice != mot:
+                            return False
+                    return True
+
                 # Traitement des temps d'attente
                 if tempsAttenteMots[numMot] > 0:
                     tempsAttenteMots[numMot] -= 1
@@ -432,10 +445,10 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         finParcours = round(v[1])
 
                         # Ajout des sillons bloqués
-                        blocagesItineraires.append(Sillon(u[0], v[0], debutParcours, debutParcours+config.ecartementMinimal))
+                        blocagesItineraires.append(Sillon(u[0], v[0], debutParcours, debutParcours+config.ecartementMinimal, mot))
                         if probleme.graphe.edges[u[0], v[0]]['exploit'] == 'Simple':
-                            blocagesItineraires.append(Sillon(v[0], u[0], debutParcours, finParcours+config.ecartementMinimal))
-                pass            # TODO: Traiter les cas où la durée est à 0, et où aucun itinéraire n'est disponible : passage immédiatement au mouvement suivant
+                            blocagesItineraires.append(Sillon(v[0], u[0], debutParcours, finParcours+config.ecartementMinimal, mot))
+                pass            # TODO: Traiter les cas où la durée est à 0 (passage immédiatement au mouvement suivant) OU où aucun itinéraire n'est disponible
 
                 # Calcul de l'avancée
                 itineraireTermine = True
@@ -464,13 +477,12 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         tempsAttenteMots[numMot] += config.tempsAttelage
 
                         # Gestion des dépassements de capacité pour les motrices
-                        nbWagonsAtteles += lot.taille
+                        nbWagonsAtteles[numMot] += lot.taille
                         capaMot = probleme.motrices[numMot].capacite
-                        if nbWagonsAtteles > capaMot:
+                        if nbWagonsAtteles[numMot] > capaMot:
                             objCoutsLogistiques += (nbWagonsAtteles - capaMot) * config.coeffDepassementCapaMotrice
-
                     else:
-                        objCoutsLogistiques += config.coutMvtInutiles + dureeItineraire * config.coeffMvtInutiles        # Sanction des mouvements inutiles. La pénalité correspond au trajet parcouru.
+                        objPenalisation += config.penaliteMvtInutiles        # Sanction des mouvements inutiles.
                 # Action de désattelage
                 elif mvtActuel.type == TypeMouvement.Deposer:
                     lot = mvtActuel.param
@@ -478,12 +490,15 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         attelages[lot] = None
                         derniersNoeudsLots[lot] = derniersNoeudsMots[numMot]                    # Mise à jour de la position du lot avant son désattelage
                         tempsAttenteMots[numMot] += config.tempsDesattelage                     # TODO: bloquer aussi le lot pendant la durée du désattelage
-                        nbWagonsAtteles -= lot.taille
+                        nbWagonsAtteles[numMot] -= lot.taille
                     else:
-                        objCoutsLogistiques += config.coutMvtInutiles + dureeItineraire * config.coeffMvtInutiles        # Sanction des mouvements inutiles. La pénalité correspond au trajet parcouru.
+                        objPenalisation += config.penaliteMvtInutiles        # Sanction des mouvements inutiles.
                 # Action d'attente
                 elif mvtActuel.type == TypeMouvement.Attendre:
                     tempsAttenteMots[numMot] += mvtActuel.param
+
+                # Passage au mouvement suivant
+                numMvtActuels[numMot] += 1
 
             # Traitement des lots
             for lot in probleme.lots:
@@ -501,21 +516,17 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 lotsValides.add(lot)
         
 
-        # Application des pénalités pour les lots non livrés
+        # Pénalisation des lots non livrés
         for lot in probleme.lots:
             if not lot in lotsValides:
-                penalite = nx.dijkstra_path_length(probleme.graphe, derniersNoeudsLots[lot], lot.noeudDestination, 'weight')
-                if not penalite:
-                    penalite = sys.maxsize          # Application d'une pénalité maximale si le noeud est inaccessible
-                else:
-                    penalite = round(penalite) * config.coeffNonLivres
-            objCoutsLogistiques += penalite
+                objCoutsLogistiques += config.coutLotNonLivre
+                objPenalisation += config.penaliteLotNonLivre
 
-        return (objDeplacement, objCoutsLogistiques)
+        return (0, int(objCoutsLogistiques), int(objPenalisation))
             
 
     # Initialisation de l'algorithme génétique
-    creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))
+    creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0, -1.0))
     creator.create("Individual", list, fitness=creator.FitnessMin)
 
     toolbox = base.Toolbox()
@@ -577,8 +588,8 @@ def main():
     # Importation du problème
     graphe = importer_graphe(config.cheminGraphe)
     probleme = Probleme(graphe)
-    probleme.motrices = [Motrice(183)]
-    probleme.lots = [Lot(0, 222, 277, 0, 1000)]
+    probleme.motrices = [Motrice(0, 183)]
+    probleme.lots = [Lot(0, 222, 277, 0, 300)]
 
     # Résolution du problème
     resoudre_probleme(config, probleme)
