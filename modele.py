@@ -13,6 +13,7 @@ from glob import glob
 from math import ceil
 from time import time
 import sys
+from functools import lru_cache
 
 # ---------------------------------------
 # Définition des classes et des types
@@ -26,7 +27,7 @@ class Config:
         self.nbGenerations = 1000
         self.taillePopulation = 150
         self.cxpb = 0.85
-        self.mutpb = 0.15
+        self.mutpb = 0.20
 
         self.cheminGraphe = 'graphe_ferroviaire.graphml'
         self.nbMvtParLot = 5                            # Nom de mouvements max par lot dans une solution
@@ -37,10 +38,10 @@ class Config:
         self.tempsDesattelage = 5                       # Temps de manoeuvre pour le désattelage
         self.horizonTemp = 500                          # Horizon temporel de la simulation
 
+        self.coutMax = 10000                            # Coût maximum appliqué par défaut aux objectifs
         self.coeffDeplacements = 1.0                    # Coefficient appliqué à l'objectif de déplacement
         self.coeffRetard = 1.0                          # Coefficient appliqué aux coûts de retard à l'arrivée
         self.coutLotNonLivre = 1000                     # Coût de base d'un lot non livré
-        self.coeffLotNonLivre = 1.0                     # Coût supplémentaire en fonction de la distance d'un lot non livré
         self.coeffDepassementCapaMotrice = 1.0          # Coefficient appliqué aux coûts pour les dépassements de capacité des motrices.
 
 
@@ -118,11 +119,24 @@ class Sillon:
         return self.__str__()
         
 class Probleme:
-    def __init__(self, graphe: nx.Graph):
+    def __init__(self, graphe: nx.Graph, motrices: list, lots: list):
         self.graphe = graphe
-        self.motrices = []
-        self.lots = []
-        self.blocages = []              # Liste des sillons bloqués (par exemple, par d'autres compagnies ferroviaires)
+        self.motrices = motrices
+        self.lots = lots
+        self.blocages = []              # Liste des sillons bloqués par défaut (par exemple, par d'autres compagnies ferroviaires)
+
+        indexMotrices = set()
+        indexLots = set()
+        for mot in self.motrices:
+            if not mot.index in indexMotrices:
+                indexMotrices.add(mot.index)
+            else:
+                error(f"Index en double dans les motrices: {mot.index}")
+        for lot in self.lots:
+            if not lot.index in indexLots:
+                indexLots.add(lot.index)
+            else:
+                error(f"Index en double dans les lots: {lot.index}")
 
 class TypeMouvement(Enum):
     Recuperer = 'Réc.'
@@ -154,13 +168,25 @@ class Mouvement:
     def __repr__(self):
         return self.__str__()
     
+    def __eq__(self, other):
+        return (
+            isinstance(other, Mouvement) 
+            and self.type == other.type 
+            and self.noeud == other.noeud 
+            and self.motrice == other.motrice 
+            and self.lot == other.lot 
+            and self.priorite == other.priorite 
+            and self.param == other.param)
+    
+    def __hash__(self):
+        return hash((self.type, self.noeud, self.motrice, self.lot, self.priorite, self.param))
+    
 Solution = Dict[Motrice, List[Mouvement]]
 
 class TypeMutation(Enum):
     Ajout = 0
     Suppression = 1
-    Deplacement = 2
-    Variation = 3
+    Variation = 2       # Remarque: pas de déplacement, car brise la causalité (de plus, les suppressions et les attentes peuvent déjà être réalisées n'importe où dans l'individu)
 
 # ---------------------------------------
 # Fonctions 
@@ -210,6 +236,9 @@ def initialiser_logs(config: Config):
         for fichier in fichiersASupprimer:
             os.remove(fichier)
             info(f"Suppression de {fichier}.")
+
+def clear_dict(d: dict, val=0):
+    d = {k: val for k in d}
 
 def importer_graphe(cheminGraphe):
     grapheOriginal = nx.read_graphml(cheminGraphe)
@@ -272,32 +301,19 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         Compte les mouvements du lot numéro 'lotNum'.
         """
         cmptMvt = 0
-        while ind[lotNum * config.nbMvtParLot + cmptMvt] and cmptMvt < config.nbMvtParLot:
+        while cmptMvt < config.nbMvtParLot and ind[lotNum * config.nbMvtParLot + cmptMvt]:
             cmptMvt += 1
         return cmptMvt
-    
-    def calculer_attelage(ind, lotNum: int, pos: int):
-        """
-        Détermination de l'attelage du lot lorsqu'on atteint le début du mouvement n° 'pos'. 
-        Retourne None si le lot n'est pas attelé à ce mouvement.
-        """
-        statutAttelage = None
-        for numMvt in range(pos):
-            mvt = ind[lotNum * config.nbMvtParLot + numMvt]
-            if mvt.type == TypeMouvement.Recuperer:
-                statutAttelage = mvt.motrice
-            elif mvt.type == TypeMouvement.Deposer:
-                statutAttelage = None
-        return statutAttelage
 
-    def inserer_dans_ind(ind, lotNum, valeur, index):
+    def inserer_dans_ind(ind, numLot, mvt, pos):
         """
         Insère une valeur dans un individu en décalant les autres entrées.
+        La position est relative au lot 'numLot'.
         """
-        debutMvts = lotNum * config.nbMvtParLot
-        for i in range(config.nbMvtParLot - 1, index, -1):
+        debutMvts = numLot * config.nbMvtParLot
+        for i in range(config.nbMvtParLot - 1, pos, -1):
             ind[debutMvts+i] = ind[debutMvts+i-1]
-        ind[index] = valeur
+        ind[debutMvts+pos] = mvt
 
     def generer_individu():
         """
@@ -338,7 +354,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     else:
                         statutAttelage = mvt.motrice
                 elif mvt.type == TypeMouvement.Deposer:
-                    if statutAttelage:
+                    if statutAttelage == mvt.motrice:                           # On vérifie que c'est la bonne motrice qui réalise la dépose
                         statutAttelage = None
                     else:
                         ind[debutMvts + numMvt] = None      # Mouvement inutile
@@ -354,16 +370,16 @@ def resoudre_probleme(config: Config, probleme: Probleme):
     
     def muter_individu(ind):
         # Sélection d'un lot et comptage des mouvements
-        lotNum = random.choice(range(len(probleme.lots)))
-        lot = probleme.lots[lotNum]
-        debutMvts = lotNum * config.nbMvtParLot         # Position dans l'individu du début des mvts rattachés au lot
-        cmptMvt = compter_mvt_motrice(ind, lotNum)
+        numLot = random.choice(range(len(probleme.lots)))
+        lot = probleme.lots[numLot]
+        debutMvts = numLot * config.nbMvtParLot         # Position dans l'individu du début des mvts rattachés au lot
+        cmptMvt = compter_mvt_motrice(ind, numLot)
 
         # Sélection d'une mutation
         if cmptMvt > 0 and cmptMvt < config.nbMvtParLot:
-            typeMut = random.choice([TypeMutation.Ajout, TypeMutation.Suppression, TypeMutation.Deplacement, TypeMutation.Variation])
+            typeMut = random.choice([TypeMutation.Ajout, TypeMutation.Suppression, TypeMutation.Variation])
         elif cmptMvt >= config.nbMvtParLot:
-            typeMut = [TypeMutation.Suppression, TypeMutation.Deplacement, TypeMutation.Variation]
+            typeMut = [TypeMutation.Suppression, TypeMutation.Variation]
         else: # cmptMvt == 0
             typeMut = TypeMutation.Ajout
 
@@ -391,55 +407,13 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 priorite = random.choice([1, 2, 3])
                 duree = ceil(np.random.exponential(scale=config.lambdaTempsAttente))
                 nouveauMvt = Mouvement(TypeMouvement.Attendre, noeudCible, motrice, lot, priorite, duree)          # Remarque: pour un mouvement d'attente, le lot n'est pas utilisé
-                ind[debutMvts + cmptMvt] = nouveauMvt
+                pos = random.randint(0, cmptMvt)            # Les attentes peuvent être insérées n'importe où sans briser la causalité 
+                inserer_dans_ind(ind, numLot, nouveauMvt, pos)
         # Mutation Suppression
         elif typeMut == TypeMutation.Suppression:
             # Sélection de l'emplacement du mouvement à supprimer dans la séquence
             pos = random.randint(0, cmptMvt - 1)
             ind[debutMvts + pos] = None         # Suppression directe du mouvement. Les corrections sont apportées dans la réparation.
-        # Mutation Déplacement
-        elif typeMut == TypeMutation.Deplacement:
-            pos = random.randint(0, cmptMvt - 1)
-            if pos == 0:
-                deplacement = +1
-            elif pos == cmptMvt - 1:
-                deplacement = -1
-            else:
-                pos == random.choice([-1, +1])
-            
-            # Application du déplacement
-            if ind[debutMvts + pos].type == TypeMouvement.Attendre:
-                pass
-            elif ind[debutMvts + pos].type == TypeMouvement.Recuperer:
-                posRecup = pos
-                posDepose = -1
-                mvtDepose = None
-
-                i = posRecup
-                while not mvtDepose and i < config.nbMvtParLot and ind[debutMvts + i]:
-                    mvtPotentiel = ind[debutMvts + i]
-                    if mvtPotentiel.type == TypeMouvement.Deposer and mvtPotentiel.motrice == ind[debutMvts + posRecup].motrice:
-                        posDepose = i
-                        mvtDepose = mvtPotentiel
-                    i += 1
-
-                if mvtDepose:
-                    pass
-            elif ind[debutMvts + pos].type == TypeMouvement.Deposer:
-                posRecup = -1
-                mvtRecup = None
-                posDepose = pos
-
-                i = 0
-                while not mvtRecup and i < debutMvts + pos:
-                    mvtPotentiel = ind[debutMvts + i]
-                    if mvtPotentiel.type == TypeMouvement.Recuperer and mvtPotentiel.motrice == ind[debutMvts + posDepose].motrice:
-                        posRecup = i
-                        mvtRecup = mvtPotentiel
-                    i += 1
-
-                if mvtRecup:
-                    pass
         # Mutation Variation
         elif typeMut == TypeMutation.Variation:
             pos = random.randint(0, cmptMvt - 1)
@@ -462,43 +436,26 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         return reparer_individu(ind), 
 
     def croiser_individus(ind1, ind2):
-        enfant1 = [None] * len(probleme.lots) * config.nbMvtParLot
-        enfant2 = [None] * len(probleme.lots) * config.nbMvtParLot
-        
-        # Sélection d'un segment aléatoire dans chaque parent et échange
-        for motNum in range(len(probleme.motrices)):
-            cmpt1 = compter_mvt_motrice(ind1, motNum)
-            cmpt2 = compter_mvt_motrice(ind2, motNum)
-            debutMvtsMot = motNum * config.nbMvtParLot
+        # Sélection du segment
+        a, b = sorted(random.sample(range(config.nbMvtParLot * len(probleme.lots)), 2))
 
-            # Dans le cas où l'un des individus n'inclut qu'un mouvement, le croisement n'est pas possible
-            if cmpt1 < 2 or cmpt2 < 2:
-                for pos in range(config.nbMvtParLot):
-                    enfant1[debutMvtsMot + pos] = ind1[debutMvtsMot + pos]
-                    enfant2[debutMvtsMot + pos] = ind2[debutMvtsMot + pos]
-                continue
-
-            # Sélection du segment
-            a1, b1 = sorted(random.sample(range(max(cmpt1, cmpt2)), 2))
-
-            # Echange des deux segments
-            for pos in range(config.nbMvtParLot):
-                if pos < a1:
-                    enfant1[debutMvtsMot + pos] = ind1[debutMvtsMot + pos]
-                    enfant2[debutMvtsMot + pos] = ind2[debutMvtsMot + pos]
-                elif pos >= a1 and pos < b1:
-                    enfant1[debutMvtsMot + pos] = ind2[debutMvtsMot + pos]
-                    enfant2[debutMvtsMot + pos] = ind1[debutMvtsMot + pos]
-                else:   # pos >= b1
-                    enfant1[debutMvtsMot + pos] = ind1[debutMvtsMot + pos]
-                    enfant2[debutMvtsMot + pos] = ind2[debutMvtsMot + pos]
-
+        # Echange des segments
+        enfant1 = ind1[:a] + ind2[a:b] + ind1[b:]
+        enfant2 = ind2[:a] + ind1[a:b] + ind2[b:]
         return reparer_individu(enfant1), reparer_individu(enfant2)
     
     def evaluer_individu(ind):
+        return evaluer_individu_hashable(tuple(ind))
+    
+    @lru_cache(maxsize=128)
+    def evaluer_individu_hashable(ind):
+        """
+        Fonction d'évaluation principale, qui utilise un cache sur une variante hashable d'individu.
+        """
+        # Déclaration des collections utilisées pour l'évaluation
         derniersNoeudsMots = dict()                             # Dernier noeud visité par chaque motrice
         mvtsActuelsMots = dict()                                # Mouvement actuel pour chaque motrice
-        motTerminees = set()                                    # Collection des motrices pour lesquelles le travail est terminé
+        motsTerminees = set()                                    # Collection des motrices pour lesquelles le travail est terminé
         tempsAttenteMots = dict.fromkeys(probleme.motrices, 0)  # Temps d'attente restant pour chaque motrice
         nbWagonsAtteles = dict.fromkeys(probleme.motrices, 0)   # Nombre de wagons attelés pour chaque motrice
 
@@ -509,6 +466,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
         itinerairesActuels = dict()                             # Itinéraires suivis actuellement pour chaque motrice
         blocagesItineraires = []                                # Blocages générés par les itinéraires
+
 
         # Vérifie que l'individu n'est pas vide
         if not any(pos is not None for pos in ind):
@@ -525,13 +483,13 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         objDeplacement = 0              # Objectif de durée de parcours pour l'ensemble des motrices
         for t in range(config.horizonTemp):
             # Si toutes les motrices ont terminé leur travail, on sort de la boucle temporelle
-            if len(motTerminees) == len(probleme.motrices):
+            if len(motsTerminees) == len(probleme.motrices):
                 break
 
             # Traitement des motrices
             for mot in probleme.motrices:
                 # Si la motrice a terminé son travail, passage à la suivante
-                if mot in motTerminees:
+                if mot in motsTerminees:
                     continue
 
                 # Extraction et vérification du mouvement actuel de la motrice
@@ -553,7 +511,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
                 # Si aucun mouvement n'a été sélectionné, alors la motrice a terminé son travail et ne sera plus traitée
                 if not mvtActuel:
-                    motTerminees.add(mot)
+                    motsTerminees.add(mot)
                     continue
 
                 # Fonction pour l'itinéraire
@@ -661,11 +619,11 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         solutionValide = True                   # La solution est dite valide si tous les lots sont livrés
         for lot in probleme.lots:
             if not lot in lotsValides:
-                distCommande = nx.dijkstra_path_length(probleme.graphe, derniersNoeudsLots[lot], lot.noeudDestination, 'weight')
-                distCommande = sys.maxsize if distCommande is None else distCommande
-                objCoutsLogistiques += config.coutLotNonLivre + distCommande * config.coeffLotNonLivre
+                objCoutsLogistiques += config.coutLotNonLivre
                 solutionValide = False
 
+        if not solutionValide:
+            objDeplacement = config.coutMax                         # L'objectif de distance est neutralisé tant que toutes les commandes ne sont pas réalisées
         return (int(objDeplacement), int(objCoutsLogistiques))
             
 
@@ -685,10 +643,10 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
     # Définition des statistiques à collecter à chaque génération
     stats = tools.Statistics(lambda aff: aff.fitness.values)
-    stats.register("avg", np.mean, axis=0)
-    stats.register("std", np.std, axis=0)
-    stats.register("min", np.min, axis=0)
-    stats.register("max", np.max, axis=0)
+    stats.register("avg", lambda x: np.round(np.mean(x, axis=0)))
+    stats.register("std", lambda x: np.round(np.std(x, axis=0)))
+    stats.register("min", lambda x: np.round(np.min(x, axis=0)))
+    stats.register("max", lambda x: np.round(np.max(x, axis=0)))
 
     logbook = tools.Logbook()
     logbook.header = ["gen", "nbevals", "avg", "std", "min", "max"]
@@ -731,9 +689,9 @@ def main():
 
     # Importation du problème
     graphe = importer_graphe(config.cheminGraphe)
-    probleme = Probleme(graphe)
-    probleme.motrices = [Motrice(0, 183), Motrice(1, 192)]
-    probleme.lots = [Lot(0, 222, 277, 0, 300), Lot(1, 270, 172, 0, 300)]
+    motrices = [Motrice(0, 183), Motrice(1, 261), Motrice(2, 270)]
+    lots = [Lot(0, 280, 277, 0, 300), Lot(1, 270, 172, 0, 300), Lot(2, 270, 244, 0, 300)]
+    probleme = Probleme(graphe, motrices, lots)
 
     # Résolution du problème
     resoudre_probleme(config, probleme)

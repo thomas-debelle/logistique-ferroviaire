@@ -1,5 +1,5 @@
 ## Refonte de l'algorithme
-- Revoir le processus de mutation et essayer de faire fonctionner le processus.
+- Implémenter la solution définitive motrice par motrice.
 - Ajouter une option de retour à la base pour certains motrices (favorisera la coopération).
 - Vérifier que les identifiants des motrices soient uniques.
 

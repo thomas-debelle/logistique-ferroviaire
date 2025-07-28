@@ -172,7 +172,12 @@ latMax = 49.00
 #lonMin = 2.06  
 #lonMax = 7.68 
 #latMin = 44.39 
-#latMax = 46.78 
+#latMax = 46.78
+# Coordonnées du Berry
+#lonMin = 1.41
+#lonMax = 3.30
+#latMin = 46.56
+#latMax = 47.33 
 
 
 
