@@ -1,12 +1,13 @@
 ## Refonte de l'algorithme
-- Implémenter la solution définitive motrice par motrice.
+- Introduire des mutations plus fortes (plusieurs mutations successives ?) pour sortir des gaps.
+- Introduire des solutions avec des heuristiques faibles (emmener directement un lot à sa destination plutôt qu'essayer des noeuds au hasard).
+- Augmenter les coûts logistiques si les capacités des noeuds ne sont pas respectées.
 - Ajouter une option de retour à la base pour certains motrices (favorisera la coopération).
-- Vérifier que les identifiants des motrices soient uniques.
+- Bloquer aussi le lot pendant la durée du désattelage (supprimer l'attelage uniquement à la fin de la durée ?)
 
 
 ## TODO - développement
 - Afficher les solutions et leur évolution. Faire en sorte d'afficher le graphe en respectant ls positions géographiques pour les noeuds. (from folium.plugins import TimestampedGeoJson)
-- Augmenter les coûts logistiques si les capacités ne sont pas respectées.
 - Construire les premières expériences. Chercher des informations économiques pour construire une carnet de commandes (si possible).
 
 ### Bonus

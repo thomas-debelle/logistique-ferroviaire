@@ -24,7 +24,7 @@ class Config:
         self.fichierLogs = None
         self.nbLogsMax = 10
 
-        self.nbGenerations = 1000
+        self.nbGenerations = 200
         self.taillePopulation = 150
         self.cxpb = 0.85
         self.mutpb = 0.20
@@ -180,8 +180,13 @@ class Mouvement:
     
     def __hash__(self):
         return hash((self.type, self.noeud, self.motrice, self.lot, self.priorite, self.param))
-    
-Solution = Dict[Motrice, List[Mouvement]]
+
+class Solution:
+    def __init__(self, objs, tracageMots: Dict[Motrice, List[int]], tracageLots: Dict[Lot, List[int]], tracageAttelages: Dict[Lot, Motrice]):
+        self.objs = objs
+        self.tracageMots = tracageMots
+        self.tracageLots = tracageLots
+        self.tracageAttelages = tracageAttelages
 
 class TypeMutation(Enum):
     Ajout = 0
@@ -261,31 +266,36 @@ def extraire_noeud(graphe: nx.Graph, index: int):
     """
     return next((n for n, d in graphe.nodes(data=True) if d.get('index', 0) == index), None)
 
+import heapq
+
 def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):
-    """
-    Implémentation personnalité de Djikstra permettant de filtrer les arcs non-disponibles à chaque instant.
-    Le filtre est une fonction prenant en paramètre (u, v, t) et retournant True ou False (arc disponible ou non).
-    Chaque étape de l'itinéraire retourné est un tuple sous la forme (noeud, instant).
-    """
-    queue = [(instant, origine, [])]      # File de priorité : (tempsCumul, noeudActuel, chemin)
+    queue = [(instant, origine)]
     visites = {}
+    parents = {origine: (None, instant)}
 
     while queue:
-        instantActuel, noeudActuel, chemin = heapq.heappop(queue)
+        temps, noeud = heapq.heappop(queue)
 
-        if (noeudActuel in visites) and (instantActuel >= visites[noeudActuel]):
+        if noeud in visites and temps >= visites[noeud]:
             continue
-        visites[noeudActuel] = instantActuel
+        visites[noeud] = temps
 
-        chemin = chemin + [(noeudActuel, instantActuel)]
+        if noeud == dest:
+            chemin = []
+            while noeud is not None:
+                parent, t = parents[noeud]
+                chemin.append((noeud, t))
+                noeud = parent
+            return list(reversed(chemin))
 
-        if noeudActuel == dest:
-            return chemin
+        for succ, data in graphe[noeud].items():
+            poids = data['weight']
+            if not filtre or filtre(noeud, succ, temps):
+                nouveau_temps = temps + poids
+                if succ not in visites or nouveau_temps < visites.get(succ, float('inf')):
+                    parents[succ] = (noeud, nouveau_temps)
+                    heapq.heappush(queue, (nouveau_temps, succ))
 
-        for successeur in graphe[noeudActuel]:
-            poids = graphe[noeudActuel][successeur]['weight']
-            if filtre and filtre(noeudActuel, successeur, instantActuel):
-                heapq.heappush(queue, (instantActuel + poids, successeur, chemin))
 
     return None                     # Aucun chemin trouvé
 
@@ -314,6 +324,13 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         for i in range(config.nbMvtParLot - 1, pos, -1):
             ind[debutMvts+i] = ind[debutMvts+i-1]
         ind[debutMvts+pos] = mvt
+
+    def lib_noeud(noeud: int):
+        data = probleme.graphe.nodes.get(noeud, None)
+        if data:
+            return data['libelle']
+        else:
+            return ''
 
     def generer_individu():
         """
@@ -445,12 +462,22 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         return reparer_individu(enfant1), reparer_individu(enfant2)
     
     def evaluer_individu(ind):
-        return evaluer_individu_hashable(tuple(ind))
+        """
+        Fonction relai d'évaluation pour la toolbox de DEAP.
+        """
+        return simuler_individu(tuple(ind))
+    
+    def calculer_solution(ind):
+        """
+        Calcule la solution associée à un individu.
+        """
+        return simuler_individu(tuple(ind), retournerSolution=True)
     
     @lru_cache(maxsize=128)
-    def evaluer_individu_hashable(ind):
+    def simuler_individu(ind: tuple, retournerSolution=False):
         """
-        Fonction d'évaluation principale, qui utilise un cache sur une variante hashable d'individu.
+        Fonction d'évaluation principale, qui utilise un cache sur la variante hashable d'un individu.
+        tracage: si à True, retourne le traçage temporel de la solution. Sinon, retourne directement les objectifs.
         """
         # Déclaration des collections utilisées pour l'évaluation
         derniersNoeudsMots = dict()                             # Dernier noeud visité par chaque motrice
@@ -467,10 +494,27 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         itinerairesActuels = dict()                             # Itinéraires suivis actuellement pour chaque motrice
         blocagesItineraires = []                                # Blocages générés par les itinéraires
 
+        # -----------------------------------
+        # Réinitialisation du traçage
+        # -----------------------------------
+        if retournerSolution:
+            tracageMots = dict.fromkeys(probleme.motrices, [None] * config.horizonTemp)                     # Liste toutes les positions successives pour chaque motrice et chaque lot
+            tracageLots = dict.fromkeys(probleme.lots, [None] * config.horizonTemp)
+            tracageAttelages = dict.fromkeys(probleme.lots, [None] * config.horizonTemp)
 
+            for k, v in tracageMots.items():
+                tracageMots[k] = [None] * config.horizonTemp
+            for k, v in tracageLots.items():
+                tracageLots[k] = [None] * config.horizonTemp
+            for k, v in tracageAttelages.items():
+                tracageAttelages[k] = [None] * config.horizonTemp
+
+        # -----------------------------------
+        # Vérifications initiales
+        # -----------------------------------
         # Vérifie que l'individu n'est pas vide
         if not any(pos is not None for pos in ind):
-            return (sys.maxsize, sys.maxsize)
+            return (config.coutMax, config.coutMax)
         
         # Initialisation des derniers noeuds
         for mot in probleme.motrices:
@@ -478,7 +522,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         for lot in probleme.lots:
             derniersNoeudsLots[lot] = lot.noeudOrigine
 
-        # Simulation
+        # -----------------------------------
+        # Boucle temporelle
+        # -----------------------------------
         objCoutsLogistiques = 0         # Objectif de coûts d'exploitation de la solution
         objDeplacement = 0              # Objectif de durée de parcours pour l'ensemble des motrices
         for t in range(config.horizonTemp):
@@ -486,7 +532,20 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             if len(motsTerminees) == len(probleme.motrices):
                 break
 
-            # Traitement des motrices
+            # -----------------------------------
+            # Mise à jour du traçage
+            # -----------------------------------
+            if retournerSolution:
+                for mot in probleme.motrices:
+                    tracageMots[mot][t] = derniersNoeudsMots[mot]
+                for lot in probleme.lots:
+                    tracageLots[lot][t] = derniersNoeudsLots[lot]
+                for lot in probleme.lots:
+                    tracageAttelages[lot][t] = attelages.get(lot, None)
+
+            # -----------------------------------
+            # Simulation des motrices
+            # -----------------------------------
             for mot in probleme.motrices:
                 # Si la motrice a terminé son travail, passage à la suivante
                 if mot in motsTerminees:
@@ -505,6 +564,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         mvtPotentiel = ind[numLot * config.nbMvtParLot + indicesMvtsLots[lot]]
                         if not mvtSelectionne or (mvtPotentiel and mvtPotentiel.motrice == mot and mvtPotentiel.priorite < mvtSelectionne.priorite):
                             mvtSelectionne = mvtPotentiel
+                            break
                     # Validation définitive du mouvement
                     mvtsActuelsMots[mot] = mvtSelectionne
                     mvtActuel = mvtsActuelsMots[mot]
@@ -514,6 +574,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     motsTerminees.add(mot)
                     continue
 
+                # -----------------------------------
+                # Itinéraire et avancée
+                # -----------------------------------
                 # Fonction pour l'itinéraire
                 def est_arc_disponible(u, v, t):
                     """
@@ -571,6 +634,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 # Application de la pénalité de déplacement
                 objDeplacement += dureeItineraire * config.coeffDeplacements
 
+                # -----------------------------------
+                # Traitement des actions
+                # -----------------------------------
                 # Action d'attelage
                 if mvtActuel.type == TypeMouvement.Recuperer:
                     lot = mvtActuel.lot
@@ -581,7 +647,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     nbWagonsAtteles[mot] += lot.taille
                     if nbWagonsAtteles[mot] > mot.capacite:
                         objCoutsLogistiques += (nbWagonsAtteles - mot.capacite) * config.coeffDepassementCapaMotrice
-
+                
                 # Action de désattelage
                 elif mvtActuel.type == TypeMouvement.Deposer:
                     lot = mvtActuel.lot
@@ -599,7 +665,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 mvtsActuelsMots[mot] = None
 
 
-            # Traitement des lots
+            # -----------------------------------
+            # Simulation des lots
+            # -----------------------------------
             for lot in probleme.lots:
                 # Mise à jour de la position de la motrice
                 if attelages.get(lot, None):
@@ -615,16 +683,25 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 lotsValides.add(lot)
 
 
-        # Ajout des coûts des lots non livrés
+        # -----------------------------------
+        # Finalisation de la simulation
+        # -----------------------------------
+        # Ajout des coûts non livrés
         solutionValide = True                   # La solution est dite valide si tous les lots sont livrés
         for lot in probleme.lots:
             if not lot in lotsValides:
                 objCoutsLogistiques += config.coutLotNonLivre
                 solutionValide = False
 
+        # L'objectif de distance est neutralisé tant que toutes les commandes ne sont pas réalisées
         if not solutionValide:
-            objDeplacement = config.coutMax                         # L'objectif de distance est neutralisé tant que toutes les commandes ne sont pas réalisées
-        return (int(objDeplacement), int(objCoutsLogistiques))
+            objDeplacement = config.coutMax                         
+
+        # Fin de l'évaluation. Retourne soit l'objectif (si évaluation classique) soit la solution.
+        if retournerSolution:
+            return Solution((objDeplacement, objCoutsLogistiques), tracageMots, tracageLots, tracageAttelages)
+        else:
+            return (int(objDeplacement), int(objCoutsLogistiques))
             
 
     # Initialisation de l'algorithme génétique
@@ -677,7 +754,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
     frontPareto = tools.sortNondominated(pop, len(pop), first_front_only=True)[0]
     for ind in frontPareto[:5]:
         info(f"Scores : ({int(ind.fitness.values[0])}, {int(ind.fitness.values[1])})")
-    return frontPareto[0]           # TODO: convertir l'individu en solution à la fin de la résolution
+
+    sol = calculer_solution(frontPareto[0])
+    return sol
 
 # ---------------------------------------
 # Processus principal
