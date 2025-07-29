@@ -1,6 +1,11 @@
 ## Refonte de l'algorithme
-- Introduire des mutations plus fortes (plusieurs mutations successives ?) pour sortir des gaps.
-- Introduire des solutions avec des heuristiques faibles (emmener directement un lot à sa destination plutôt qu'essayer des noeuds au hasard).
+- Implémenter les mutations et les croisements: 
+    - Insérer ou supprimer des étapes aléatoirement pour les lots. Conserver l'étape de début et l'étape de fin.
+    - Insérer des mouvements d'attente aléatoires pour les motrices.
+    - Changer l'ordre des mouvements de récup et de dépose dans les motrices.
+    - Insérer des mouvements d'attente aléatoirement.
+    - Pour les croisements: croiser soit les étapes, soit les mouvements. Si croisement des étapes, conserver les étapes de début et de fin.
+- Créer un cache manuellement (en implémentant une fonction de hash pour les solutions).
 - Augmenter les coûts logistiques si les capacités des noeuds ne sont pas respectées.
 - Ajouter une option de retour à la base pour certains motrices (favorisera la coopération).
 - Bloquer aussi le lot pendant la durée du désattelage (supprimer l'attelage uniquement à la fin de la durée ?)

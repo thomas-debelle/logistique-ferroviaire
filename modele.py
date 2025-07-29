@@ -14,6 +14,7 @@ from math import ceil
 from time import time
 import sys
 from functools import lru_cache
+from collections import namedtuple
 
 # ---------------------------------------
 # Définition des classes et des types
@@ -30,7 +31,7 @@ class Config:
         self.mutpb = 0.20
 
         self.cheminGraphe = 'graphe_ferroviaire.graphml'
-        self.nbMvtParLot = 5                            # Nom de mouvements max par lot dans une solution
+        self.nbMvtParMot = 5                            # Nom de mouvements max par lot dans une solution
 
         self.lambdaTempsAttente = 3.0                   # Paramètre lambda de la loi exponentielle utilisée pour générer les temps d'attente dans les mutations
         self.ecartementMinimal = 8                      # Ecartement minimal (en min) entre deux trains qui se suivent
@@ -68,7 +69,7 @@ class Lot:
     """
     Ensemble de wagons regroupés pour une même commande ou un même client.
     """
-    def __init__(self, index: int, noeudOrigine: int, noeudDestination: int, debutCommande: int, finCommande: int, taille=1):
+    def __init__(self, index: int, noeudOrigine: int, noeudDest: int, debutCommande: int, finCommande: int, taille=1):
         """
         index: identifiant unique du lot.
         debutCommande: instant à partir duquel le lot est disponible pour être transporté.
@@ -77,7 +78,7 @@ class Lot:
         """
         self.index = index
         self.noeudOrigine = noeudOrigine
-        self.noeudDestination = noeudDestination
+        self.noeudDest = noeudDest
         self.debutCommande = debutCommande
         self.finCommande = finCommande
         self.taille = taille
@@ -148,38 +149,6 @@ class TypeMouvement(Enum):
     
     def __repr__(self):
         return self.__str__()
-
-class Mouvement:
-    def __init__(self, type: TypeMouvement, noeud: int, motrice: Motrice, lot: Lot, priorite: int=3, param=None):
-        """
-        lot: lot commanditant le mouvement.
-        priorite: plus la valeur est petite, plus le mouvement est prioritaire.
-        """
-        self.type = type
-        self.noeud = noeud
-        self.motrice = motrice
-        self.lot = lot
-        self.priorite = priorite
-        self.param = param
-
-    def __str__(self):
-        return f'({self.type.value}, {self.motrice}, {self.lot}, N{self.noeud}, P{self.priorite}, {self.param})' if self.param else f'({self.type.value}, {self.motrice}, {self.lot}, N{self.noeud}, P{self.priorite})'
-    
-    def __repr__(self):
-        return self.__str__()
-    
-    def __eq__(self, other):
-        return (
-            isinstance(other, Mouvement) 
-            and self.type == other.type 
-            and self.noeud == other.noeud 
-            and self.motrice == other.motrice 
-            and self.lot == other.lot 
-            and self.priorite == other.priorite 
-            and self.param == other.param)
-    
-    def __hash__(self):
-        return hash((self.type, self.noeud, self.motrice, self.lot, self.priorite, self.param))
 
 class Solution:
     def __init__(self, objs, tracageMots: Dict[Motrice, List[int]], tracageLots: Dict[Lot, List[int]], tracageAttelages: Dict[Lot, Motrice]):
@@ -304,238 +273,102 @@ def resoudre_probleme(config: Config, probleme: Probleme):
     """
     Cherche une solution pour résoudre l'exploitation.
     """
-    noeudsCibles = [n for n, d in probleme.graphe.nodes(data=True) if d.get('capacite') > 0]        # Liste des noeuds pouvant être utilisés comme cible pour un mouvement de déplacement
-
-    def compter_mvt_motrice(ind, lotNum: int):
-        """
-        Compte les mouvements du lot numéro 'lotNum'.
-        """
-        cmptMvt = 0
-        while cmptMvt < config.nbMvtParLot and ind[lotNum * config.nbMvtParLot + cmptMvt]:
-            cmptMvt += 1
-        return cmptMvt
-
-    def inserer_dans_ind(ind, numLot, mvt, pos):
-        """
-        Insère une valeur dans un individu en décalant les autres entrées.
-        La position est relative au lot 'numLot'.
-        """
-        debutMvts = numLot * config.nbMvtParLot
-        for i in range(config.nbMvtParLot - 1, pos, -1):
-            ind[debutMvts+i] = ind[debutMvts+i-1]
-        ind[debutMvts+pos] = mvt
-
-    def lib_noeud(noeud: int):
-        data = probleme.graphe.nodes.get(noeud, None)
-        if data:
-            return data['libelle']
-        else:
-            return ''
+    class Individu:
+        def __init__(self):
+            self.mvtsMotrices = {}
+            for mot in probleme.motrices:
+                self.mvtsMotrices[mot] = []      # Pas d'utilisation de dict.fromkeys, car provoque des erreurs de hash.
+            self.etapesLots = {}
+            for lot in probleme.lots:
+                self.etapesLots[lot] = []
 
     def generer_individu():
         """
-        Génère aléatoirement une solution sous la forme d'un individu. 
+        Génère un individu initial. Chaque individu est un tableau de tableau, qui continent
         """
-        ind = [None] * len(probleme.lots) * config.nbMvtParLot      # Un individu est une liste concaténée de suites de mouvements associées à chaque lots
-        return creator.Individual(ind)
+        ind = creator.Individual()
+        for lot in probleme.lots:
+            ind.etapesLots[lot] = [lot.noeudOrigine, lot.noeudDest]
+            mot = random.choice(probleme.motrices)           # Sélection de motrices aléatoires pour amener directement les lots à destination
+            ind.mvtsMotrices[mot].append({'type': TypeMouvement.Recuperer, 'lot': lot, 'etape': 0})      # Les mouvements sont exécutés dans l'ordre, lorsque le lot atteint son étape 0 (c'est à dire, dès le départ).
+            ind.mvtsMotrices[mot].append({'type': TypeMouvement.Deposer, 'lot': lot, 'etape': 0})
+        return ind
 
     def reparer_individu(ind):
-        """
-        Réorganise les mouvements, regroupe les attentes et supprime les mouvements inutiles.
-        """
-        for numLot in range(len(probleme.lots)):
-            lot = probleme.lots[numLot]
-            debutMvts = numLot * config.nbMvtParLot     # Position dans l'individu du début des mvts rattachés à la motrice
-
-            # Regroupement des attentes
-            for pos in range(config.nbMvtParLot-1):
-                attente = ind[debutMvts + pos]
-                attenteSuivante = ind[debutMvts + pos + 1]
-                if (attente and attenteSuivante 
-                    and attente.type == TypeMouvement.Attendre 
-                    and attenteSuivante.type == TypeMouvement.Attendre
-                    and attente.motrice == attenteSuivante.motrice
-                    and attente.noeud == attenteSuivante.noeud):
-                    ind[debutMvts + pos].param += ind[debutMvts + pos + 1].param
-                    ind[debutMvts + pos + 1] = None
-
-            # Suppression des mouvements inutiles
-            statutAttelage = None
-            for numMvt in range(config.nbMvtParLot):
-                mvt = ind[debutMvts + numMvt]
-                if not mvt:
-                    continue
-                if mvt.type == TypeMouvement.Recuperer:
-                    if statutAttelage or numMvt == config.nbMvtParLot - 1:      # Pas de Récup en tant que dernier mouvement
-                        ind[debutMvts + numMvt] = None      # Mouvement inutile
-                    else:
-                        statutAttelage = mvt.motrice
-                elif mvt.type == TypeMouvement.Deposer:
-                    if statutAttelage == mvt.motrice:                           # On vérifie que c'est la bonne motrice qui réalise la dépose
-                        statutAttelage = None
-                    else:
-                        ind[debutMvts + numMvt] = None      # Mouvement inutile
-            if statutAttelage:      # Ajout d'une dépose finale s'il y a toujours un attelage
-                ind[debutMvts + config.nbMvtParLot - 1] = Mouvement(TypeMouvement.Deposer, lot.noeudDestination, statutAttelage, lot, priorite=1)       # La dépose peut être forcée sur le dernier mouvement, car on s'est assuré qu'il n'y a pas de récup à ce moment là
-
-            # Réorganisation des mouvements
-            nonNones = [mvt for mvt in ind[debutMvts:debutMvts+config.nbMvtParLot] if mvt]
-            nones = [mvt for mvt in ind[debutMvts:debutMvts+config.nbMvtParLot] if not mvt]
-            mvtsLot = nonNones + nones                  # Reconstruction du tableau pour la motrice avec tous les None à la fin
-            ind = ind[:debutMvts] + mvtsLot + ind[debutMvts+len(mvtsLot):]       # Insertion du nouvel ordre dans l'individu
-        return creator.Individual(ind)
+        return ind
     
     def muter_individu(ind):
-        # Sélection d'un lot et comptage des mouvements
-        numLot = random.choice(range(len(probleme.lots)))
-        lot = probleme.lots[numLot]
-        debutMvts = numLot * config.nbMvtParLot         # Position dans l'individu du début des mvts rattachés au lot
-        cmptMvt = compter_mvt_motrice(ind, numLot)
-
-        # Sélection d'une mutation
-        if cmptMvt > 0 and cmptMvt < config.nbMvtParLot:
-            typeMut = random.choice([TypeMutation.Ajout, TypeMutation.Suppression, TypeMutation.Variation])
-        elif cmptMvt >= config.nbMvtParLot:
-            typeMut = [TypeMutation.Suppression, TypeMutation.Variation]
-        else: # cmptMvt == 0
-            typeMut = TypeMutation.Ajout
-
-        # Mutation Ajout
-        if typeMut == TypeMutation.Ajout:
-            # Sélection du mouvement à ajouter
-            sel = random.randint(1, 100)      # 33% de chance d'ajouter une attente, 66% d'ajouter un couple Réc+Dép
-
-            # Ajout de mouvements Récupérer + Déposer
-            if sel > 33 and cmptMvt < config.nbMvtParLot - 1:      # S'il n'y a pas de place, on n'ajoute pas de couple Réc+Dép
-                mvtPrecedent = ind[debutMvts + cmptMvt - 1]
-                noeudOrigine = mvtPrecedent.noeud if mvtPrecedent else lot.noeudOrigine
-                noeudDestination = random.choice(noeudsCibles)
-                motrice = random.choice(probleme.motrices)
-                priorite = random.randint(1, 3)
-                
-                nouveauMvtRec = Mouvement(TypeMouvement.Recuperer, noeudOrigine, motrice, lot, priorite)
-                nouveauMvtDep = Mouvement(TypeMouvement.Deposer, noeudDestination, motrice, lot, priorite)
-                ind[debutMvts + cmptMvt] = nouveauMvtRec
-                ind[debutMvts + cmptMvt + 1] = nouveauMvtDep
-            # Ajout d'un mouvement Attendre
-            else:
-                noeudCible = random.choice(noeudsCibles)
-                motrice = random.choice(probleme.motrices)
-                priorite = random.choice([1, 2, 3])
-                duree = ceil(np.random.exponential(scale=config.lambdaTempsAttente))
-                nouveauMvt = Mouvement(TypeMouvement.Attendre, noeudCible, motrice, lot, priorite, duree)          # Remarque: pour un mouvement d'attente, le lot n'est pas utilisé
-                pos = random.randint(0, cmptMvt)            # Les attentes peuvent être insérées n'importe où sans briser la causalité 
-                inserer_dans_ind(ind, numLot, nouveauMvt, pos)
-        # Mutation Suppression
-        elif typeMut == TypeMutation.Suppression:
-            # Sélection de l'emplacement du mouvement à supprimer dans la séquence
-            pos = random.randint(0, cmptMvt - 1)
-            ind[debutMvts + pos] = None         # Suppression directe du mouvement. Les corrections sont apportées dans la réparation.
-        # Mutation Variation
-        elif typeMut == TypeMutation.Variation:
-            pos = random.randint(0, cmptMvt - 1)
-
-            # Sélection d'une nouvelle priorité
-            priorite = None
-            while priorite is None or priorite == ind[debutMvts + pos].priorite:
-                priorite = random.randint(1, 3)                                 # On s'assure de proposer une nouvelle priorité pour que la mutation soit utile
-
-            if ind[debutMvts + pos].type == TypeMouvement.Recuperer:
-                ind[debutMvts + pos].priorite = priorite                        # Variation de la priorité
-            elif ind[debutMvts + pos].type == TypeMouvement.Deposer:
-                ind[debutMvts + pos].priorite = priorite                        # Variation de la priorité
-            elif ind[debutMvts + pos].type == TypeMouvement.Attendre:
-                if random.randint(0, 1) == 1:
-                    ind[debutMvts + pos].priorite = priorite                    # Variation de la priorité
-                else:
-                    ind[debutMvts + pos].duree = ceil(np.random.exponential(scale=config.lambdaTempsAttente))      # Variation de l'attente
-
-        return reparer_individu(ind), 
+        return reparer_individu(ind),
 
     def croiser_individus(ind1, ind2):
-        # Sélection du segment
-        a, b = sorted(random.sample(range(config.nbMvtParLot * len(probleme.lots)), 2))
+        return ind1, ind2
 
-        # Echange des segments
-        enfant1 = ind1[:a] + ind2[a:b] + ind1[b:]
-        enfant2 = ind2[:a] + ind1[a:b] + ind2[b:]
-        return reparer_individu(enfant1), reparer_individu(enfant2)
-    
     def evaluer_individu(ind):
-        """
-        Fonction relai d'évaluation pour la toolbox de DEAP.
-        """
-        return simuler_individu(tuple(ind))
+        sol = simuler_individu(ind)
+        return sol.objs
     
-    def calculer_solution(ind):
+    def simuler_individu(ind, tracage=False):
         """
-        Calcule la solution associée à un individu.
+        tracage: si à False, les positions successives des lots et motrices ne sont pas tracées dans la solution.
         """
-        return simuler_individu(tuple(ind), retournerSolution=True)
-    
-    @lru_cache(maxsize=128)
-    def simuler_individu(ind: tuple, retournerSolution=False):
-        """
-        Fonction d'évaluation principale, qui utilise un cache sur la variante hashable d'un individu.
-        tracage: si à True, retourne le traçage temporel de la solution. Sinon, retourne directement les objectifs.
-        """
-        # Déclaration des collections utilisées pour l'évaluation
-        derniersNoeudsMots = dict()                             # Dernier noeud visité par chaque motrice
-        mvtsActuelsMots = dict()                                # Mouvement actuel pour chaque motrice
-        motsTerminees = set()                                    # Collection des motrices pour lesquelles le travail est terminé
-        tempsAttenteMots = dict.fromkeys(probleme.motrices, 0)  # Temps d'attente restant pour chaque motrice
-        nbWagonsAtteles = dict.fromkeys(probleme.motrices, 0)   # Nombre de wagons attelés pour chaque motrice
+        # -------------------------------------------------
+        # Collections et variables pour la simulation
+        # -------------------------------------------------
+        derniersNoeudsMots = dict()                                 # Dernier noeud visité par chaque motrice
+        derniersNoeudsLots = dict()                                 # Dernier noeud visité par chaque lot
+        attelages = dict()                                          # Attelage associant une motrice à chaque lot
 
-        derniersNoeudsLots = dict()                             # Dernier noeud visité par chaque lot
-        indicesMvtsLots = dict.fromkeys(probleme.lots, 0)       # Indice du mouvement actuel dans l'individu pour chaque lot
-        attelages = dict()                                      # Attelage associant une motrice à chaque lot
-        lotsValides = set()
+        indicesMvtsActuels = dict.fromkeys(probleme.motrices, 0)    # Indice du mouvement actuel pour chaque motrice
+        indicesEtapesActuelles = dict.fromkeys(probleme.lots, 0)    # Indice de l'étape actuelle pour chaque lot
+        itinerairesActuels = dict.fromkeys(probleme.motrices, None) # Itinéraires suivis actuellement pour chaque motrice
+        blocagesItineraires = []                                    # Blocages générés par les itinéraires
 
-        itinerairesActuels = dict()                             # Itinéraires suivis actuellement pour chaque motrice
-        blocagesItineraires = []                                # Blocages générés par les itinéraires
+        tempsAttenteMots = dict.fromkeys(probleme.motrices, 0)      # Temps d'attente restant pour chaque motrice
+        nbWagonsAtteles = dict.fromkeys(probleme.motrices, 0)       # Nombre de wagons attelés pour chaque motrice
 
-        # -----------------------------------
-        # Réinitialisation du traçage
-        # -----------------------------------
-        if retournerSolution:
-            tracageMots = dict.fromkeys(probleme.motrices, [None] * config.horizonTemp)                     # Liste toutes les positions successives pour chaque motrice et chaque lot
-            tracageLots = dict.fromkeys(probleme.lots, [None] * config.horizonTemp)
-            tracageAttelages = dict.fromkeys(probleme.lots, [None] * config.horizonTemp)
+        objCoutsLogistiques = 0         # Objectif de coûts d'exploitation de la solution
+        objDeplacement = 0              # Objectif de durée de parcours pour l'ensemble des motrices
+        tracageMots = {}
+        tracageLots = {}
+        tracageAttelages = {}
+        lotsValides = dict.fromkeys(probleme.lots, False)
 
-            for k, v in tracageMots.items():
-                tracageMots[k] = [None] * config.horizonTemp
-            for k, v in tracageLots.items():
-                tracageLots[k] = [None] * config.horizonTemp
-            for k, v in tracageAttelages.items():
-                tracageAttelages[k] = [None] * config.horizonTemp
-
-        # -----------------------------------
-        # Vérifications initiales
-        # -----------------------------------
-        # Vérifie que l'individu n'est pas vide
-        if not any(pos is not None for pos in ind):
-            return (config.coutMax, config.coutMax)
-        
         # Initialisation des derniers noeuds
         for mot in probleme.motrices:
             derniersNoeudsMots[mot] = mot.noeudOrigine
         for lot in probleme.lots:
             derniersNoeudsLots[lot] = lot.noeudOrigine
 
-        # -----------------------------------
-        # Boucle temporelle
-        # -----------------------------------
-        objCoutsLogistiques = 0         # Objectif de coûts d'exploitation de la solution
-        objDeplacement = 0              # Objectif de durée de parcours pour l'ensemble des motrices
-        for t in range(config.horizonTemp):
-            # Si toutes les motrices ont terminé leur travail, on sort de la boucle temporelle
-            if len(motsTerminees) == len(probleme.motrices):
-                break
 
-            # -----------------------------------
-            # Mise à jour du traçage
-            # -----------------------------------
-            if retournerSolution:
+        # -------------------------------------------------
+        # Définition des actions, exécutées à la fin de l'itinéraire des mouvements
+        # -------------------------------------------------
+        def action_recuperer(mot, lot):
+            attelages[lot] = mot
+            tempsAttenteMots[mot] += config.tempsAttelage
+
+            # Gestion des dépassements de capacité pour les motrices
+            nbWagonsAtteles[mot] += lot.taille
+            if nbWagonsAtteles[mot] > mot.capacite:
+                objCoutsLogistiques += (nbWagonsAtteles - mot.capacite) * config.coeffDepassementCapaMotrice
+
+        def action_deposer(mot, lot):
+            attelages[lot] = None
+            derniersNoeudsLots[lot] = derniersNoeudsMots[mot]                    # Mise à jour de la position du lot avant son désattelage
+            tempsAttenteMots[mot] += config.tempsDesattelage                     # TODO: bloquer aussi le lot pendant la durée du désattelage
+            nbWagonsAtteles[mot] -= lot.taille
+            indicesEtapesActuelles[lot] += 1
+
+        def action_attendre(mot, duree):
+            tempsAttenteMots[mot] += duree
+
+
+        # -------------------------------------------------
+        # Boucle temporelle
+        # -------------------------------------------------
+        for t in range(config.horizonTemp):
+            # Mise à jour du traçage (si activé)
+            if tracage:
                 for mot in probleme.motrices:
                     tracageMots[mot][t] = derniersNoeudsMots[mot]
                 for lot in probleme.lots:
@@ -543,170 +376,109 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 for lot in probleme.lots:
                     tracageAttelages[lot][t] = attelages.get(lot, None)
 
-            # -----------------------------------
             # Simulation des motrices
-            # -----------------------------------
             for mot in probleme.motrices:
-                # Si la motrice a terminé son travail, passage à la suivante
-                if mot in motsTerminees:
+                # Si tous les mouvement ont été traitées, la motrice a terminé son travail
+                if indicesMvtsActuels[mot] >= len(ind.mvtsMotrices[mot]):
                     continue
+                mvtActuel = ind.mvtsMotrices[mot][indicesMvtsActuels[mot]]
 
-                # Extraction et vérification du mouvement actuel de la motrice
-                mvtActuel = mvtsActuelsMots.get(mot, None)
-                if not mvtActuel:
-                    mvtSelectionne = None                   # Si aucun mouvement actuel: sélection du mouvement suivant
-                    for numLot in range(len(probleme.lots)):
-                        # Vérification du lot
-                        lot = probleme.lots[numLot]
-                        if indicesMvtsLots[lot] >= config.nbMvtParLot:      # Si on a déjà terminé tous les mouvements du lot, alors il est ignoré
-                            continue
-                        # Sélection du mouvement potentiel
-                        mvtPotentiel = ind[numLot * config.nbMvtParLot + indicesMvtsLots[lot]]
-                        if not mvtSelectionne or (mvtPotentiel and mvtPotentiel.motrice == mot and mvtPotentiel.priorite < mvtSelectionne.priorite):
-                            mvtSelectionne = mvtPotentiel
-                            break
-                    # Validation définitive du mouvement
-                    mvtsActuelsMots[mot] = mvtSelectionne
-                    mvtActuel = mvtsActuelsMots[mot]
+                # Extraction du noeud actuel
+                if mvtActuel['type'] == TypeMouvement.Attendre:
+                    noeudCible = mvtActuel['noeud']
+                elif mvtActuel['type'] == TypeMouvement.Recuperer or mvtActuel['type'] == TypeMouvement.Deposer:
+                    lotCible = mvtActuel['lot']
+                    noeudCible = ind.etapesLots[lotCible][mvtActuel['etape']]
 
-                # Si aucun mouvement n'a été sélectionné, alors la motrice a terminé son travail et ne sera plus traitée
-                if not mvtActuel:
-                    motsTerminees.add(mot)
-                    continue
+                # Génération d'un nouvel itinéraire
+                if derniersNoeudsMots[mot] != noeudCible and not itinerairesActuels.get(mot, None):
+                    def est_arc_disponible(u, v, t):                # Filtre pour Dijkstra
+                        # Vérification des blocages du problème
+                        for sillon in probleme.blocages:
+                            if sillon.est_dans_sillon(u, v, t):
+                                return False
+                        # Vérification des blocages ajoutés par les itinéraires
+                        for sillon in blocagesItineraires:
+                            if sillon.est_dans_sillon(u, v, t) and sillon.motrice != mot:
+                                return False
+                        return True
 
-                # -----------------------------------
-                # Itinéraire et avancée
-                # -----------------------------------
-                # Fonction pour l'itinéraire
-                def est_arc_disponible(u, v, t):
-                    """
-                    Fonction pour la vérification des arcs bloqués
-                    """
-                    # Vérification des blocages du problème
-                    for sillon in probleme.blocages:
-                        if sillon.est_dans_sillon(u, v, t):
-                            return False
-                    # Vérification des blocages ajoutés par les itinéraires
-                    for sillon in blocagesItineraires:
-                        if sillon.est_dans_sillon(u, v, t) and sillon.motrice != mot:
-                            return False
-                    return True
-                
-                # Traitement de l'itinéraire
-                if not itinerairesActuels.get(mot, None):
-                    itineraire = dijkstra_temporel(probleme.graphe, derniersNoeudsMots[mot], mvtActuel.noeud, t, est_arc_disponible)
+                    itineraire = dijkstra_temporel(probleme.graphe, derniersNoeudsMots[mot], noeudCible, t, est_arc_disponible)
                     itinerairesActuels[mot] = itineraire
 
-                    # Si aucun itinéraire n'est disponible, la motrice reste immobile à cet instant
+                    # Si aucun itinéraire n'est disponible, la motrice est en attente à cet instant
                     if not itineraire:
                         continue
 
                     # Blocage des arcs de l'itinéraire
                     for i in range(len(itineraire)-1):
-                        # Extraction des information
-                        u = itineraire[i]
+                        u = itineraire[i]               # Extraction des information
                         v = itineraire[i+1]
                         debutParcours = round(u[1])
                         finParcours = round(v[1])
 
-                        # Ajout des sillons bloqués
-                        blocagesItineraires.append(Sillon(u[0], v[0], debutParcours, debutParcours+config.ecartementMinimal, mot))
+                        blocagesItineraires.append(Sillon(u[0], v[0], debutParcours, debutParcours+config.ecartementMinimal, mot))      # Ajout des sillons bloqués
                         if probleme.graphe.edges[u[0], v[0]]['exploit'] == 'Simple':
                             blocagesItineraires.append(Sillon(v[0], u[0], debutParcours, finParcours+config.ecartementMinimal, mot))
-                pass            # TODO: Traiter les cas où la durée est à 0 (passage immédiatement au mouvement suivant)
+                        pass            # TODO: Traiter les cas où la durée est à 0 (passage immédiatement au mouvement suivant)
 
-                # Calcul de l'avancée
-                itineraireTermine = True
-                itineraire = itinerairesActuels[mot]
-                for i in range(len(itineraire)):
-                    if t < itineraire[i][1]:                # Parcoure toutes les étapes de l'itinéraire jusqu'à trouver une étape qui n'a pas encore été atteinte 
-                        itineraireTermine = False
-                        derniersNoeudsMots[mot] = itineraire[i-1][0]
-                        break
+                # Calcul de l'avancée sur l'itinéraire actuel
+                if itinerairesActuels[mot]:
+                    itineraireTermine = True
+                    itineraire = itinerairesActuels[mot]
+                    for i in range(len(itineraire)):
+                        if t < itineraire[i][1]:                # Parcoure tous les noeuds de l'itinéraire jusqu'à trouver un noeud qui n'a pas encore été atteint 
+                            itineraireTermine = False
+                            derniersNoeudsMots[mot] = itineraire[i-1][0]
+                            break
 
-                # Finalisation de l'itinéraire
-                if not itineraireTermine:
-                    continue                # Fin du traitement si l'itinéraire n'est pas terminé
-                derniersNoeudsMots[mot] = itineraire[-1][0]
-                dureeItineraire = round(itinerairesActuels[mot][-1][1] - itinerairesActuels[mot][0][1])      # Calcule la durée totale du parcours avant de supprimer l'itinéraire
-                itinerairesActuels[mot] = None
+                    # Finalisation de l'itinéraire
+                    if itineraireTermine:
+                        derniersNoeudsMots[mot] = itineraire[-1][0]
+                        dureeItineraire = round(itinerairesActuels[mot][-1][1] - itinerairesActuels[mot][0][1])     # Calcule la durée totale du parcours avant de supprimer l'itinéraire
+                        itinerairesActuels[mot] = None                                                              # Neutralisation de l'itinéraire
+                        objDeplacement += dureeItineraire * config.coeffDeplacements                                # Application de la pénalité de déplacement
 
-                # Application de la pénalité de déplacement
-                objDeplacement += dureeItineraire * config.coeffDeplacements
+                # Application de l'action liée au mouvement
+                if derniersNoeudsMots[mot] == noeudCible:
+                    actionValide = False            # Pour les mouvements dépendants des lots : vérifie que le lot est bien à l'étape actuelle
+                    if mvtActuel['type'] == TypeMouvement.Recuperer and indicesEtapesActuelles[mvtActuel['lot']] == mvtActuel['etape']:
+                        action_recuperer(mot, mvtActuel['lot'])
+                        actionValide = True
+                    elif mvtActuel['type'] == TypeMouvement.Deposer and indicesEtapesActuelles[mvtActuel['lot']] == mvtActuel['etape']:
+                        action_deposer(mot, mvtActuel['lot'])
+                        actionValide = True
+                    elif mvtActuel['type'] == TypeMouvement.Attendre:
+                        action_attendre(mot, mvtActuel['duree'])
+                        actionValide = True
 
-                # -----------------------------------
-                # Traitement des actions
-                # -----------------------------------
-                # Action d'attelage
-                if mvtActuel.type == TypeMouvement.Recuperer:
-                    lot = mvtActuel.lot
-                    attelages[lot] = mot
-                    tempsAttenteMots[mot] += config.tempsAttelage
+                    # Passage au mouvement suivant
+                    if actionValide:
+                        indicesMvtsActuels[mot] += 1
 
-                    # Gestion des dépassements de capacité pour les motrices
-                    nbWagonsAtteles[mot] += lot.taille
-                    if nbWagonsAtteles[mot] > mot.capacite:
-                        objCoutsLogistiques += (nbWagonsAtteles - mot.capacite) * config.coeffDepassementCapaMotrice
-                
-                # Action de désattelage
-                elif mvtActuel.type == TypeMouvement.Deposer:
-                    lot = mvtActuel.lot
-                    attelages[lot] = None
-                    derniersNoeudsLots[lot] = derniersNoeudsMots[mot]                    # Mise à jour de la position du lot avant son désattelage
-                    tempsAttenteMots[mot] += config.tempsDesattelage                     # TODO: bloquer aussi le lot pendant la durée du désattelage
-                    nbWagonsAtteles[mot] -= lot.taille
-
-                # Action d'attente
-                elif mvtActuel.type == TypeMouvement.Attendre:
-                    tempsAttenteMots[mot] += mvtActuel.param
-
-                # Passage au mouvement suivant
-                indicesMvtsLots[lot] += 1
-                mvtsActuelsMots[mot] = None
-
-
-            # -----------------------------------
             # Simulation des lots
-            # -----------------------------------
             for lot in probleme.lots:
                 # Mise à jour de la position de la motrice
                 if attelages.get(lot, None):
                     derniersNoeudsLots[lot] = derniersNoeudsMots[attelages[lot]]
 
                 # Si le lot n'a pas encore atteint sa destination, pas de traitements supplémentaires
-                if attelages.get(lot, None) or derniersNoeudsLots[lot] != lot.noeudDestination:
+                if attelages.get(lot, None) or derniersNoeudsLots[lot] != lot.noeudDest:
                     continue
 
                 # Application des pénalités de retard
-                if t >= lot.finCommande and not lot in lotsValides:
+                if t >= lot.finCommande and not lotsValides[lot]:
                     objCoutsLogistiques += (t - lot.finCommande) * config.coeffRetard           # La pénalité correspond au nombre d'instants écoulé depuis la fin de la commande
-                lotsValides.add(lot)
+                lotsValides[lot] = True
 
 
-        # -----------------------------------
         # Finalisation de la simulation
-        # -----------------------------------
-        # Ajout des coûts non livrés
-        solutionValide = True                   # La solution est dite valide si tous les lots sont livrés
-        for lot in probleme.lots:
-            if not lot in lotsValides:
-                objCoutsLogistiques += config.coutLotNonLivre
-                solutionValide = False
-
-        # L'objectif de distance est neutralisé tant que toutes les commandes ne sont pas réalisées
-        if not solutionValide:
-            objDeplacement = config.coutMax                         
-
-        # Fin de l'évaluation. Retourne soit l'objectif (si évaluation classique) soit la solution.
-        if retournerSolution:
-            return Solution((objDeplacement, objCoutsLogistiques), tracageMots, tracageLots, tracageAttelages)
-        else:
-            return (int(objDeplacement), int(objCoutsLogistiques))
-            
+        sol = Solution((objDeplacement, objCoutsLogistiques), tracageMots, tracageLots, tracageAttelages)
+        return sol
 
     # Initialisation de l'algorithme génétique
     creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0))
-    creator.create("Individual", list, fitness=creator.FitnessMin)
+    creator.create("Individual", Individu, fitness=creator.FitnessMin)
 
     toolbox = base.Toolbox()
 
