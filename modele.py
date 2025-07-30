@@ -29,6 +29,8 @@ class Config:
         self.taillePopulation = 150
         self.cxpb = 0.85
         self.mutpb = 0.20
+        self.pbOpeEtapes = 0.5                          # Probabilité que les étapes soient sujettes à des mutations ou des croisements
+        # self.pbOpeMvts = 1 - self.pbOpeEtapes           # Probabilité que les mouvements soient sujettes à des mutations ou des croisements
 
         self.cheminGraphe = 'graphe_ferroviaire.graphml'
         self.nbMvtParMot = 5                            # Nom de mouvements max par lot dans une solution
@@ -157,11 +159,6 @@ class Solution:
         self.tracageLots = tracageLots
         self.tracageAttelages = tracageAttelages
 
-class TypeMutation(Enum):
-    Ajout = 0
-    Suppression = 1
-    Variation = 2       # Remarque: pas de déplacement, car brise la causalité (de plus, les suppressions et les attentes peuvent déjà être réalisées n'importe où dans l'individu)
-
 # ---------------------------------------
 # Fonctions 
 # ---------------------------------------
@@ -273,6 +270,8 @@ def resoudre_probleme(config: Config, probleme: Probleme):
     """
     Cherche une solution pour résoudre l'exploitation.
     """
+    noeudsCapa = [n for n, d in probleme.graphe.nodes(data=True) if d.get('capacite') > 0]        # Liste des noeuds avec une capacité de stockage, et pouvant être utilisés comme cible pour une étape de lot ou un mouvement de motrice
+
     class Individu:
         def __init__(self):
             self.mvtsMotrices = {}
@@ -291,13 +290,44 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             ind.etapesLots[lot] = [lot.noeudOrigine, lot.noeudDest]
             mot = random.choice(probleme.motrices)           # Sélection de motrices aléatoires pour amener directement les lots à destination
             ind.mvtsMotrices[mot].append({'type': TypeMouvement.Recuperer, 'lot': lot, 'etape': 0})      # Les mouvements sont exécutés dans l'ordre, lorsque le lot atteint son étape 0 (c'est à dire, dès le départ).
-            ind.mvtsMotrices[mot].append({'type': TypeMouvement.Deposer, 'lot': lot, 'etape': 0})
+            ind.mvtsMotrices[mot].append({'type': TypeMouvement.Deposer, 'lot': lot, 'etape': 1})
         return ind
 
     def reparer_individu(ind):
         return ind
     
-    def muter_individu(ind):
+    def muter_individu(ind: Individu):
+        tirageMutEtapes = random.uniform(0, 1)
+        # Mutation des étapes
+        if tirageMutEtapes <= config.pbOpeEtapes:
+            lot = random.choice(probleme.lots)
+            mutSupEtape = random.uniform(0, 1) <= 0.5 and len(ind.etapesLots[lot]) > 2
+            # Suppression d'un étape
+            if mutSupEtape:  # Suppression uniquement si d'autres étapes que origine et dest
+                etape = random.randint(0, len(ind.etapesLots[lot]) - 2) + 1       # Sélection d'un étape entre les étapes origine et dest
+                ind.etapesLots[lot].pop(etape)
+            # Ajout d'une étape
+            else:
+                etape = random.randint(0, len(ind.etapesLots[lot]) - 2) + 1
+                noeudCible = random.choice(noeudsCapa)      # Sélection aléatoire d'un noeud éligible
+                ind.etapesLots[lot].insert(etape, noeudCible)
+            # TODO: attribuer l'étape à une motrice en créant un mouvement (sinon, la simulation sera bloquée)
+            # TODO: pour chaque motrice, s'assurer que les mouvements portant sur un même lot suivent la chronologie des étapes
+            for mot in probleme.motrices:
+                for i, mvt in enumerate(ind.mvtsMotrices[mot]):
+                    lotMvt = mvt.get('lot', None) 
+                    # Si suppression d'une étape
+                    if mutSupEtape and lotMvt == lot and mvt['etape'] == etape:
+                        ind.mvtsMotrices[mot].pop(i)    # Suppression du mouvement
+                    # Si ajout d'une étape
+                    elif not mutSupEtape and lotMvt == lot and mvt['etape'] >= etape:
+                        mvt['etape'] += 1               # Incrémentation des étapes
+
+        # Mutation des mouvements
+        else:
+            pass
+
+
         return reparer_individu(ind),
 
     def croiser_individus(ind1, ind2):

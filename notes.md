@@ -1,8 +1,7 @@
 ## Refonte de l'algorithme
 - Implémenter les mutations et les croisements: 
-    - Insérer ou supprimer des étapes aléatoirement pour les lots. Conserver l'étape de début et l'étape de fin.
     - Insérer des mouvements d'attente aléatoires pour les motrices.
-    - Changer l'ordre des mouvements de récup et de dépose dans les motrices.
+    - Changer l'ordre des mouvements de récup et de dépose dans les motrices (en s'assurant de réaliser les étapes d'un même lot dans l'ordre croissant).
     - Insérer des mouvements d'attente aléatoirement.
     - Pour les croisements: croiser soit les étapes, soit les mouvements. Si croisement des étapes, conserver les étapes de début et de fin.
 - Créer un cache manuellement (en implémentant une fonction de hash pour les solutions).
