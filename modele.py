@@ -557,7 +557,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
     for ind in frontPareto[:5]:
         info(f"Scores : ({int(ind.fitness.values[0])}, {int(ind.fitness.values[1])})")
 
-    sol = calculer_solution(frontPareto[0])
+    sol = simuler_individu(frontPareto[0], tracage=True)
     return sol
 
 # ---------------------------------------
