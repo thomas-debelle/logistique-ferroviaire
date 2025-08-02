@@ -1,13 +1,14 @@
 ## Refonte de l'algorithme
-- Implémenter les mutations et les croisements: 
-    - Insérer des mouvements d'attente aléatoires pour les motrices.
-    - Changer l'ordre des mouvements de récup et de dépose dans les motrices (en s'assurant de réaliser les étapes d'un même lot dans l'ordre croissant).
-    - Insérer des mouvements d'attente aléatoirement.
-    - Pour les croisements: croiser soit les étapes, soit les mouvements. Si croisement des étapes, conserver les étapes de début et de fin.
+- Corriger les problèmes de causalité lors du déplacement d'un mouvement pour une même motrice (exécuter le code pour voir).
+- Pour les croisements: croiser soit les étapes, soit les mouvements. Si croisement des étapes, conserver les étapes de début et de fin.
+
+- Faire en sorte que les lots ne soient pas encore disponibles si le début de la commande n'a pas été atteint (peut être déjà le cas)
 - Créer un cache manuellement (en implémentant une fonction de hash pour les solutions).
+- Attacher des temps d'attente aux mouvements (appliqués avant le début du mouvement).
 - Augmenter les coûts logistiques si les capacités des noeuds ne sont pas respectées.
 - Ajouter une option de retour à la base pour certains motrices (favorisera la coopération).
-- Bloquer aussi le lot pendant la durée du désattelage (supprimer l'attelage uniquement à la fin de la durée ?)
+- Bloquer aussi le lot pendant la durée du désattelage (supprimer l'attelage uniquement à la fin de la durée ?).
+- Traiter tous les TODO
 
 
 ## TODO - développement

@@ -28,7 +28,7 @@ class Config:
         self.nbGenerations = 200
         self.taillePopulation = 150
         self.cxpb = 0.85
-        self.mutpb = 0.20
+        self.mutpb = 0.15
         self.pbOpeEtapes = 0.5                          # Probabilité que les étapes soient sujettes à des mutations ou des croisements
         # self.pbOpeMvts = 1 - self.pbOpeEtapes           # Probabilité que les mouvements soient sujettes à des mutations ou des croisements
 
@@ -144,10 +144,21 @@ class Probleme:
 class TypeMouvement(Enum):
     Recuperer = 'Réc.'
     Deposer = 'Dép.'
-    Attendre = 'Att.'
 
     def __str__(self):
         return self.name
+    
+    def __repr__(self):
+        return self.__str__()
+    
+class Mouvement:
+    def __init__(self, type: TypeMouvement, lot: Lot, etape: int):
+        self.type = type
+        self.lot = lot
+        self.etape = etape
+
+    def __str__(self):
+        return f'({self.type}, {self.lot}, {self.etape})'
     
     def __repr__(self):
         return self.__str__()
@@ -234,7 +245,7 @@ def extraire_noeud(graphe: nx.Graph, index: int):
 
 import heapq
 
-def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):
+def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):   # TODO: vérifier que les arcs bloqués sont bien pris en compte
     queue = [(instant, origine)]
     visites = {}
     parents = {origine: (None, instant)}
@@ -262,7 +273,6 @@ def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):
                     parents[succ] = (noeud, nouveau_temps)
                     heapq.heappush(queue, (nouveau_temps, succ))
 
-
     return None                     # Aucun chemin trouvé
 
 
@@ -281,6 +291,128 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             for lot in probleme.lots:
                 self.etapesLots[lot] = []
 
+        def inserer_mvts_lies(self, mot: Motrice, mvtRecup: Mouvement, mvtDepose: Mouvement):
+            """
+            Insère les mouvements en respectant la causalité.
+            Attention, les mouvements doivent être liés.
+            """
+            # Recherche d'un emplacement pour les mouvements (avec respect de la causalité) 
+            mvtsInseres = False
+            for i, mvt in enumerate(self.mvtsMotrices[mot]):
+                if mvt.type == TypeMouvement.Deposer and mvt.lot == mvtRecup.lot and mvt.etape == mvtRecup.etape:
+                    self.mvtsMotrices[mot].insert(i+1, mvtRecup)
+                    self.mvtsMotrices[mot].insert(i+2, mvtDepose)        # Insertion des mouvements juste avant i
+                    mvtsInseres = True
+                    break 
+            if not mvtsInseres:
+                self.mvtsMotrices[mot].append(mvtRecup)
+                self.mvtsMotrices[mot].append(mvtDepose)
+
+        def extraire_mvt_lie(self, mot: Motrice, mvt: Mouvement):
+            """
+            Recherche le mouvement lié au mouvement passé en argument.
+            Retourne un tuple contenant son index et sa valeur.
+            """
+            # Extraction de l'index
+            mvt1 = mvt
+            try:
+                indexMvt1 = self.mvtsMotrices[mot].index(mvt)
+            except Exception:
+                error(f'Le mouvement {mvt} n\'est pas rattaché à la motrice {mot}.')
+                pause_and_exit()
+
+            # Recherche de mvt2 (mouvement lié) en fonction du type de mvt1
+            if mvt1.type == TypeMouvement.Recuperer:
+                for i in range(indexMvt1+1, len(self.mvtsMotrices[mot])):
+                    mvt2Potentiel = self.mvtsMotrices[mot][i]
+                    if mvt2Potentiel.type == TypeMouvement.Deposer and mvt2Potentiel.lot == mvt1.lot and mvt2Potentiel.etape == mvt1.etape+1:
+                        return (i, mvt2Potentiel)
+            elif mvt1.type == TypeMouvement.Deposer:
+                for i in range(indexMvt1-1, -1, -1):
+                    mvt2Potentiel = self.mvtsMotrices[mot][i]
+                    if mvt2Potentiel.type == TypeMouvement.Recuperer and mvt2Potentiel.lot == mvt1.lot and mvt2Potentiel.etape == mvt1.etape-1:
+                        return (i, mvt2Potentiel)
+            else:
+                raise Exception(f"Type du mouvement {mvt1} inconnu.")
+            
+            # S'il n'y a pas de mouvement lié
+            warning(f"Aucun mouvement lié à {mvt1}.")
+            return (-1, None)
+
+        def inserer_etape(self, lot: Lot, numEtape: int, noeudEtape: int, motriceEtape: Motrice):
+            """
+            Insère une étape à un lot et attribue le mouvement à une motrice.
+            L'ajout ne doit pas être réalisé au début ou à la fin de la suite d'étapes.
+            """
+            # Insertion de l'étape
+            self.etapesLots[lot].insert(numEtape, noeudEtape)
+            # Décalage des mouvements existants
+            for mot in probleme.motrices:
+                for i, mvt in enumerate(self.mvtsMotrices[mot]):
+                    if (mvt.lot == lot 
+                        and (mvt.etape > numEtape or (mvt.etape == numEtape and mvt.type != TypeMouvement.Deposer))):      # N'incrémente pas l'étape de dépose au noeud cible
+                        self.mvtsMotrices[mot][i].etape += 1     # Incrémentation du numéro d'étape
+            # Création de mouvements pour attribuer l'étape à une motrice
+            mvtRecup = Mouvement(TypeMouvement.Recuperer, lot, numEtape)
+            mvtDepose = Mouvement(TypeMouvement.Deposer, lot, numEtape+1)
+            self.inserer_mvts_lies(motriceEtape, mvtRecup, mvtDepose)
+
+        def supprimer_etape(self, lot: Lot, numEtape: int):
+            # Suppression de l'étape
+            self.etapesLots[lot].pop(numEtape)
+            # Suppression des mouvements associées et décalages des autres mouvements
+            for mot in probleme.motrices:
+                indicesMvtsASup = []        # Pour suppression après parcours
+                for i, mvt in enumerate(self.mvtsMotrices[mot]):
+                    # Enregistrement de la sup. du mvt de récup. à l'étape cible et du mvt de dépose à l'étape suivante
+                    if ((mvt.lot == lot and mvt.etape == numEtape and mvt.type == TypeMouvement.Recuperer)
+                        or (mvt.lot == lot and mvt.etape == numEtape + 1 and mvt.type == TypeMouvement.Deposer)):
+                        indicesMvtsASup.append(i)
+                    # Décalage des autres mouvements
+                    elif (mvt.lot == lot and mvt.etape > numEtape):
+                        self.mvtsMotrices[mot][i].etape -= 1
+                # Suppression effective
+                cmptSup = 0
+                for i in indicesMvtsASup:
+                    self.mvtsMotrices[mot].pop(i-cmptSup)
+                    cmptSup+=1
+
+        def tirer_mouvements_lies(self, mot: Motrice):
+            """
+            Retourne un tuple contenant deux mouvements liés (Récupérer et Déposer).
+            """
+            if len(self.mvtsMotrices[mot]) < 2:
+                warning(f"{mot} doit être associée à 2 mvts minimum.")
+                return None, None
+            
+            # Sélection d'un mouvement aléatoire
+            indexMvt1 = random.randint(0, len(self.mvtsMotrices[mot])-1)
+            mvt1 = self.mvtsMotrices[mot][indexMvt1]
+            mvt2 = None
+
+            # Si mouvement en Récup
+            if mvt1.type == TypeMouvement.Recuperer:
+                for i in range(indexMvt1, len(self.mvtsMotrices[mot])):
+                    mvtPotentiel = self.mvtsMotrices[mot][i]
+                    if mvtPotentiel.type == TypeMouvement.Deposer and mvtPotentiel.lot == mvt1.lot and mvtPotentiel.etape == mvt1.etape+1:
+                        mvt2 = mvtPotentiel
+                        break
+            # Si mouvement en Dépose
+            elif mvt1.type == TypeMouvement.Deposer:
+                for i in range(indexMvt1-1, -1, -1):
+                    mvtPotentiel = self.mvtsMotrices[mot][i]
+                    if mvtPotentiel.type == TypeMouvement.Recuperer and mvtPotentiel.lot == mvt1.lot and mvtPotentiel.etape == mvt1.etape-1:
+                        mvt2 = mvtPotentiel
+                        break
+                mvt1, mvt2 = mvt2, mvt1         # Inversion pour toujours avoir la récupération en premier
+            else:
+                raise Exception(f"Type du mouvement {mvt1} inconnu.")
+            
+            if mvt2 is None:
+                warning(f"Aucun mouvement lié à {self.mvtsMotrices[mot][indexMvt1]}.")
+            
+            return mvt1, mvt2
+
     def generer_individu():
         """
         Génère un individu initial. Chaque individu est un tableau de tableau, qui continent
@@ -289,52 +421,76 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         for lot in probleme.lots:
             ind.etapesLots[lot] = [lot.noeudOrigine, lot.noeudDest]
             mot = random.choice(probleme.motrices)           # Sélection de motrices aléatoires pour amener directement les lots à destination
-            ind.mvtsMotrices[mot].append({'type': TypeMouvement.Recuperer, 'lot': lot, 'etape': 0})      # Les mouvements sont exécutés dans l'ordre, lorsque le lot atteint son étape 0 (c'est à dire, dès le départ).
-            ind.mvtsMotrices[mot].append({'type': TypeMouvement.Deposer, 'lot': lot, 'etape': 1})
+            mvtRecup = Mouvement(TypeMouvement.Recuperer, lot, 0)       # Les mouvements sont exécutés dans l'ordre, lorsque le lot atteint son étape 0 (c'est à dire, dès le départ).
+            mvtDepose = Mouvement(TypeMouvement.Deposer, lot, 1)
+            
+            ind.mvtsMotrices[mot].append(mvtRecup)      
+            ind.mvtsMotrices[mot].append(mvtDepose)
         return ind
 
     def reparer_individu(ind):
         return ind
     
     def muter_individu(ind: Individu):
-        tirageMutEtapes = random.uniform(0, 1)
-        # Mutation des étapes
-        if tirageMutEtapes <= config.pbOpeEtapes:
+        tirageMut = random.choice([0, 1])
+        # Mutation des étapes (ajout ou suppression)
+        if tirageMut == 0:
             lot = random.choice(probleme.lots)
-            mutSupEtape = random.uniform(0, 1) <= 0.5 and len(ind.etapesLots[lot]) > 2
-            # Suppression d'un étape
-            if mutSupEtape:  # Suppression uniquement si d'autres étapes que origine et dest
-                etape = random.randint(0, len(ind.etapesLots[lot]) - 2) + 1       # Sélection d'un étape entre les étapes origine et dest
-                ind.etapesLots[lot].pop(etape)
+            subTirageMut = random.choice([0, 1, 2]) if len(ind.etapesLots[lot]) > 2 else 0         # Pas de suppression ou variation si seulement origine et dest
             # Ajout d'une étape
-            else:
-                etape = random.randint(0, len(ind.etapesLots[lot]) - 2) + 1
-                noeudCible = random.choice(noeudsCapa)      # Sélection aléatoire d'un noeud éligible
-                ind.etapesLots[lot].insert(etape, noeudCible)
-            # TODO: attribuer l'étape à une motrice en créant un mouvement (sinon, la simulation sera bloquée)
-            # TODO: pour chaque motrice, s'assurer que les mouvements portant sur un même lot suivent la chronologie des étapes
-            for mot in probleme.motrices:
-                for i, mvt in enumerate(ind.mvtsMotrices[mot]):
-                    lotMvt = mvt.get('lot', None) 
-                    # Si suppression d'une étape
-                    if mutSupEtape and lotMvt == lot and mvt['etape'] == etape:
-                        ind.mvtsMotrices[mot].pop(i)    # Suppression du mouvement
-                    # Si ajout d'une étape
-                    elif not mutSupEtape and lotMvt == lot and mvt['etape'] >= etape:
-                        mvt['etape'] += 1               # Incrémentation des étapes
+            if subTirageMut == 0:
+                numEtape = random.randint(1, len(ind.etapesLots[lot]) - 1)      # Sélection d'un étape entre les étapes origine (exclue) et dest (inclue)
+                noeudEtape = random.choice(noeudsCapa)      # Sélection d'un noeud de capacité non nulle
+                ind.inserer_etape(lot, numEtape, noeudEtape, random.choice(probleme.motrices))
+            # Suppression d'un étape
+            elif subTirageMut == 1:  # Suppression uniquement si d'autres étapes que origine et dest
+                numEtape = random.randint(1, len(ind.etapesLots[lot]) - 2)       # Sélection d'un étape entre les étapes origine (exclue) et dest (exclue)
+                ind.supprimer_etape(lot, numEtape)
+            elif subTirageMut == 2:
+                numEtape = random.randint(1, len(ind.etapesLots[lot]) - 2)       # Sélection d'un étape entre les étapes origine (exclue) et dest (exclue)
+                ind.etapesLots[numEtape] = random.choice(noeudsCapa)      # Sélection d'un noeud de capacité non nulle
 
         # Mutation des mouvements
-        else:
-            pass
-
+        elif tirageMut == 1:
+            subTirageMut = random.choice([0, 1])
+            # Déplacement de mouvements entre deux motrices
+            if subTirageMut == 0:
+                # Tirage des motrices
+                if len(probleme.motrices) < 2:
+                    return ind,
+                mots = random.sample(probleme.motrices, 2); motSource = mots[0]; motCible = mots[1]
+                # Tirage des mouvements
+                if len(ind.mvtsMotrices[motSource]) == 0:
+                    return ind,
+                mvtRecup, mvtDepose = ind.tirer_mouvements_lies(motSource)
+                # Déplacement des mouvements
+                ind.mvtsMotrices[motSource].remove(mvtRecup)
+                ind.mvtsMotrices[motSource].remove(mvtDepose)
+                ind.inserer_mvts_lies(motCible, mvtRecup, mvtDepose)
+            # Echange de l'ordre des mouvements dans la séquence d'une même motrice
+            elif subTirageMut == 1:
+                # Tirage de la motrice et du mouvement
+                mot = random.choice(probleme.motrices)
+                if len(ind.mvtsMotrices[mot]) == 0:
+                    return ind,
+                mvt = random.choice(ind.mvtsMotrices[mot])
+                # Sélection d'une nouvelle position en respectant le mouvement lié
+                indexMvtLie, mvtLie = ind.extraire_mvt_lie(mot, mvt)
+                if mvt.type == TypeMouvement.Recuperer:
+                    nvIndexMvt = random.randint(0, indexMvtLie)
+                elif mvt.type == TypeMouvement.Deposer:
+                    nvIndexMvt = random.randint(indexMvtLie+1, len(ind.mvtsMotrices[mot]))
+                # Déplacement à la nouvelle position
+                ind.mvtsMotrices[mot].remove(mvt)
+                ind.mvtsMotrices[mot].insert(nvIndexMvt+1, mvt)
 
         return reparer_individu(ind),
 
     def croiser_individus(ind1, ind2):
-        return ind1, ind2
+        return ind1, ind2       # TODO: Croiser les étapes (très simple) ou les mouvements (nécessite de filtrer plusieurs mouvements réalisant la même étape)
 
     def evaluer_individu(ind):
-        sol = simuler_individu(ind)
+        sol = simuler_individu(ind)        # Désactiver le tracage
         return sol.objs
     
     def simuler_individu(ind, tracage=False):
@@ -362,12 +518,19 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         tracageLots = {}
         tracageAttelages = {}
         lotsValides = dict.fromkeys(probleme.lots, False)
+        nbLotsValides = 0
 
         # Initialisation des derniers noeuds
         for mot in probleme.motrices:
             derniersNoeudsMots[mot] = mot.noeudOrigine
         for lot in probleme.lots:
             derniersNoeudsLots[lot] = lot.noeudOrigine
+
+        # Initialisation du traçage (si activé)
+        if tracage:
+            tracageMots = {mot: [None] * config.horizonTemp for mot in probleme.motrices}       # Copie par compréhension de liste pour éviter de créer des référence vers la même liste avec fromkeys
+            tracageLots = {lot: [None] * config.horizonTemp for lot in probleme.lots}
+            tracageAttelages = {lot: [None] * config.horizonTemp for lot in probleme.lots}
 
 
         # -------------------------------------------------
@@ -408,17 +571,19 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
             # Simulation des motrices
             for mot in probleme.motrices:
-                # Si tous les mouvement ont été traitées, la motrice a terminé son travail
+                # Si la motrice est en attente, elle n'est pas évaluée à cette instant
+                if tempsAttenteMots[mot] > 0:
+                    tempsAttenteMots[mot] -= 1
+                    continue
+
+                # Si tous les mouvements ont été traitées, la motrice a terminé son travail
                 if indicesMvtsActuels[mot] >= len(ind.mvtsMotrices[mot]):
                     continue
                 mvtActuel = ind.mvtsMotrices[mot][indicesMvtsActuels[mot]]
 
                 # Extraction du noeud actuel
-                if mvtActuel['type'] == TypeMouvement.Attendre:
-                    noeudCible = mvtActuel['noeud']
-                elif mvtActuel['type'] == TypeMouvement.Recuperer or mvtActuel['type'] == TypeMouvement.Deposer:
-                    lotCible = mvtActuel['lot']
-                    noeudCible = ind.etapesLots[lotCible][mvtActuel['etape']]
+                lotCible = mvtActuel.lot
+                noeudCible = ind.etapesLots[lotCible][mvtActuel.etape]
 
                 # Génération d'un nouvel itinéraire
                 if derniersNoeudsMots[mot] != noeudCible and not itinerairesActuels.get(mot, None):
@@ -472,14 +637,11 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 # Application de l'action liée au mouvement
                 if derniersNoeudsMots[mot] == noeudCible:
                     actionValide = False            # Pour les mouvements dépendants des lots : vérifie que le lot est bien à l'étape actuelle
-                    if mvtActuel['type'] == TypeMouvement.Recuperer and indicesEtapesActuelles[mvtActuel['lot']] == mvtActuel['etape']:
-                        action_recuperer(mot, mvtActuel['lot'])
+                    if mvtActuel.type == TypeMouvement.Recuperer and indicesEtapesActuelles[mvtActuel.lot] == mvtActuel.etape:
+                        action_recuperer(mot, mvtActuel.lot)
                         actionValide = True
-                    elif mvtActuel['type'] == TypeMouvement.Deposer and indicesEtapesActuelles[mvtActuel['lot']] == mvtActuel['etape']:
-                        action_deposer(mot, mvtActuel['lot'])
-                        actionValide = True
-                    elif mvtActuel['type'] == TypeMouvement.Attendre:
-                        action_attendre(mot, mvtActuel['duree'])
+                    elif mvtActuel.type == TypeMouvement.Deposer and attelages[mvtActuel.lot] == mot:
+                        action_deposer(mot, mvtActuel.lot)
                         actionValide = True
 
                     # Passage au mouvement suivant
@@ -496,13 +658,16 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 if attelages.get(lot, None) or derniersNoeudsLots[lot] != lot.noeudDest:
                     continue
 
-                # Application des pénalités de retard
-                if t >= lot.finCommande and not lotsValides[lot]:
-                    objCoutsLogistiques += (t - lot.finCommande) * config.coeffRetard           # La pénalité correspond au nombre d'instants écoulé depuis la fin de la commande
-                lotsValides[lot] = True
-
+                # Validation du lot
+                if not lotsValides[lot]:
+                    if t >= lot.finCommande:        # Application de la pénalité de retard
+                        objCoutsLogistiques += (t - lot.finCommande) * config.coeffRetard           # La pénalité correspond au nombre d'instants écoulé depuis la fin de la commande
+                    nbLotsValides += 1
+                    lotsValides[lot] = True
 
         # Finalisation de la simulation
+        if nbLotsValides < len(probleme.lots):
+            objCoutsLogistiques = config.coutMax        # Neutralisation de l'objectif si les lots n'atteignent pas leur destination dans le temps imparti
         sol = Solution((objDeplacement, objCoutsLogistiques), tracageMots, tracageLots, tracageAttelages)
         return sol
 
