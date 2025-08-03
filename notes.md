@@ -1,5 +1,5 @@
 ## Refonte de l'algorithme
-- Pour les croisements: croiser soit les étapes, soit les mouvements. Si croisement des étapes, conserver les étapes de début et de fin.
+- Corriger les ordres des mouvements générés par les croisements (lancer le programme pour voir).
 
 - Faire en sorte que les lots ne soient pas encore disponibles si le début de la commande n'a pas été atteint (peut être déjà le cas)
 - Créer un cache manuellement (en implémentant une fonction de hash pour les solutions).

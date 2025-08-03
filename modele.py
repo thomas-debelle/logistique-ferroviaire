@@ -283,13 +283,20 @@ def resoudre_probleme(config: Config, probleme: Probleme):
     noeudsCapa = [n for n, d in probleme.graphe.nodes(data=True) if d.get('capacite') > 0]        # Liste des noeuds avec une capacité de stockage, et pouvant être utilisés comme cible pour une étape de lot ou un mouvement de motrice
 
     class Individu:
-        def __init__(self):
-            self.mvtsMotrices = {}
-            for mot in probleme.motrices:
-                self.mvtsMotrices[mot] = []      # Pas d'utilisation de dict.fromkeys, car provoque des erreurs de hash.
-            self.etapesLots = {}
-            for lot in probleme.lots:
-                self.etapesLots[lot] = []
+        def __init__(self, autreInd=None):
+            if autreInd is not None:
+                # Constructeur par copie
+                self.mvtsMotrices = {mot: liste[:] for mot, liste in autreInd.mvtsMotrices.items()}
+                self.etapesLots = {lot: liste[:] for lot, liste in autreInd.etapesLots.items()}
+            else:
+                # Constructeur par défaut
+                self.mvtsMotrices = {}
+                for mot in probleme.motrices:
+                    self.mvtsMotrices[mot] = []     # Pas d'utilisation de dict.fromkeys, car provoque des erreurs de hash
+                self.etapesLots = {}
+                for lot in probleme.lots:
+                    self.etapesLots[lot] = []
+
 
         def inserer_mvts_lies(self, mot: Motrice, mvtRecup: Mouvement, mvtDepose: Mouvement):
             """
@@ -377,7 +384,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     self.mvtsMotrices[mot].pop(i-cmptSup)
                     cmptSup+=1
 
-        def tirer_mouvements_lies(self, mot: Motrice):
+        def extraire_mvts_lies(self, mot: Motrice):
             """
             Retourne un tuple contenant deux mouvements liés (Récupérer et Déposer).
             """
@@ -427,9 +434,6 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             ind.mvtsMotrices[mot].append(mvtRecup)      
             ind.mvtsMotrices[mot].append(mvtDepose)
         return ind
-
-    def reparer_individu(ind):
-        return ind
     
     def muter_individu(ind: Individu):
         tirageMut = random.choice([0, 1])
@@ -450,7 +454,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 numEtape = random.randint(1, len(ind.etapesLots[lot]) - 2)       # Sélection d'un étape entre les étapes origine (exclue) et dest (exclue)
                 ind.etapesLots[numEtape] = random.choice(noeudsCapa)      # Sélection d'un noeud de capacité non nulle
 
-        # Mutation des mouvements
+        # Mutation des mouvements (déplacement ou échange)
         elif tirageMut == 1:
             subTirageMut = random.choice([0, 1])
             # Déplacement de mouvements entre deux motrices
@@ -462,7 +466,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 # Tirage des mouvements
                 if len(ind.mvtsMotrices[motSource]) == 0:
                     return ind,
-                mvtRecup, mvtDepose = ind.tirer_mouvements_lies(motSource)
+                mvtRecup, mvtDepose = ind.extraire_mvts_lies(motSource)
                 # Déplacement des mouvements
                 ind.mvtsMotrices[motSource].remove(mvtRecup)
                 ind.mvtsMotrices[motSource].remove(mvtDepose)
@@ -484,10 +488,33 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 ind.mvtsMotrices[mot].remove(mvt)
                 ind.mvtsMotrices[mot].insert(nvIndexMvt, mvt)
 
-        return reparer_individu(ind),
+        return ind,
 
-    def croiser_individus(ind1, ind2):
-        return ind1, ind2       # TODO: Croiser les étapes (très simple) ou les mouvements (nécessite de filtrer plusieurs mouvements réalisant la même étape)
+    def croiser_individus(ind1: Individu, ind2: Individu):
+        enfant1 = Individu(ind1)
+        enfant2 = Individu(ind2)
+        # Croisement des étapes
+        lot = random.choice(probleme.lots)
+        enfant1.etapesLots[lot] = ind2.etapesLots[lot]
+        enfant2.etapesLots[lot] = ind1.etapesLots[lot]
+        for mot in probleme.motrices:
+            # Extraction des données à transférer
+            transfertsInd1 = [(i, mvt) for i, mvt in enumerate(enfant1.mvtsMotrices[mot]) if mvt.lot == lot]
+            transfertsInd2 = [(i, mvt) for i, mvt in enumerate(enfant2.mvtsMotrices[mot]) if mvt.lot == lot]
+            # Transfert des mvts de ind1 vers ind2
+            for i, _ in reversed(transfertsInd1):
+                del enfant1.mvtsMotrices[mot][i]
+            for i, mvt in transfertsInd1:
+                insertAt = min(i, len(enfant2.mvtsMotrices[mot]))
+                enfant2.mvtsMotrices[mot].insert(insertAt, mvt)
+            # Transfert des mvts de ind2 vers ind1
+            for i, _ in reversed(transfertsInd2):
+                del enfant2.mvtsMotrices[mot][i]
+            for i, mvt in transfertsInd2:
+                insertAt = min(i, len(enfant1.mvtsMotrices[mot]))
+                enfant1.mvtsMotrices[mot].insert(insertAt, mvt)
+
+        return creator.Individual(enfant1), creator.Individual(enfant2)
 
     def evaluer_individu(ind):
         sol = simuler_individu(ind)        # Désactiver le tracage
