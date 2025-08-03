@@ -1,5 +1,4 @@
 ## Refonte de l'algorithme
-- Corriger les problèmes de causalité lors du déplacement d'un mouvement pour une même motrice (exécuter le code pour voir).
 - Pour les croisements: croiser soit les étapes, soit les mouvements. Si croisement des étapes, conserver les étapes de début et de fin.
 
 - Faire en sorte que les lots ne soient pas encore disponibles si le début de la commande n'a pas été atteint (peut être déjà le cas)

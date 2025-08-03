@@ -477,12 +477,12 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 # Sélection d'une nouvelle position en respectant le mouvement lié
                 indexMvtLie, mvtLie = ind.extraire_mvt_lie(mot, mvt)
                 if mvt.type == TypeMouvement.Recuperer:
-                    nvIndexMvt = random.randint(0, indexMvtLie)
+                    nvIndexMvt = random.randint(0, indexMvtLie-1)
                 elif mvt.type == TypeMouvement.Deposer:
-                    nvIndexMvt = random.randint(indexMvtLie+1, len(ind.mvtsMotrices[mot]))
+                    nvIndexMvt = random.randint(indexMvtLie+1, len(ind.mvtsMotrices[mot])-1)
                 # Déplacement à la nouvelle position
                 ind.mvtsMotrices[mot].remove(mvt)
-                ind.mvtsMotrices[mot].insert(nvIndexMvt+1, mvt)
+                ind.mvtsMotrices[mot].insert(nvIndexMvt, mvt)
 
         return reparer_individu(ind),
 
