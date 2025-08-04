@@ -10,11 +10,9 @@ from logging import info, warning, error
 import os
 import datetime
 from glob import glob
-from math import ceil
-from time import time
-import sys
+from copy import deepcopy
+from frozendict import frozendict
 from functools import lru_cache
-from collections import namedtuple
 
 # ---------------------------------------
 # Définition des classes et des types
@@ -163,6 +161,12 @@ class Mouvement:
     def __repr__(self):
         return self.__str__()
 
+    def __eq__(self, value):
+        return isinstance(value, Mouvement) and self.type == value.type and self.lot == value.lot and self.etape == value.etape
+    
+    def __hash__(self):
+        return hash((self.type, self.lot, self.etape))
+
 class Solution:
     def __init__(self, objs, tracageMots: Dict[Motrice, List[int]], tracageLots: Dict[Lot, List[int]], tracageAttelages: Dict[Lot, Motrice]):
         self.objs = objs
@@ -275,7 +279,6 @@ def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):   # TODO: 
 
     return None                     # Aucun chemin trouvé
 
-
 def resoudre_probleme(config: Config, probleme: Probleme):
     """
     Cherche une solution pour résoudre l'exploitation.
@@ -286,8 +289,8 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         def __init__(self, autreInd=None):
             if autreInd is not None:
                 # Constructeur par copie
-                self.mvtsMotrices = {mot: liste[:] for mot, liste in autreInd.mvtsMotrices.items()}
-                self.etapesLots = {lot: liste[:] for lot, liste in autreInd.etapesLots.items()}
+                self.mvtsMotrices = {mot: deepcopy(mvts) for mot, mvts in autreInd.mvtsMotrices.items()}
+                self.etapesLots = {lot: deepcopy(etapes) for lot, etapes in autreInd.etapesLots.items()}
             else:
                 # Constructeur par défaut
                 self.mvtsMotrices = {}
@@ -296,8 +299,16 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 self.etapesLots = {}
                 for lot in probleme.lots:
                     self.etapesLots[lot] = []
+    
+        def __eq__(self, other):
+            return (self.mvtsMotrices == other.mvtsMotrices and
+                    self.etapesLots == other.etapesLots)
 
-
+        def __hash__(self):
+            mvtsMotricesFrozen = frozendict({mot.index: tuple(mvts) for mot, mvts in self.mvtsMotrices.items()})
+            etapesLotsFrozen = frozendict({lot.index: tuple(etapes) for lot, etapes in self.etapesLots.items()})
+            return hash((mvtsMotricesFrozen, etapesLotsFrozen))
+        
         def inserer_mvts_lies(self, mot: Motrice, mvtRecup: Mouvement, mvtDepose: Mouvement):
             """
             Insère les mouvements en respectant la causalité.
@@ -452,7 +463,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 ind.supprimer_etape(lot, numEtape)
             elif subTirageMut == 2:
                 numEtape = random.randint(1, len(ind.etapesLots[lot]) - 2)       # Sélection d'un étape entre les étapes origine (exclue) et dest (exclue)
-                ind.etapesLots[numEtape] = random.choice(noeudsCapa)      # Sélection d'un noeud de capacité non nulle
+                ind.etapesLots[lot][numEtape] = random.choice(noeudsCapa)      # Sélection d'un noeud de capacité non nulle
 
         # Mutation des mouvements (déplacement ou échange)
         elif tirageMut == 1:
@@ -499,25 +510,26 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         enfant2.etapesLots[lot] = ind1.etapesLots[lot]
         for mot in probleme.motrices:
             # Extraction des données à transférer
-            transfertsInd1 = [(i, mvt) for i, mvt in enumerate(enfant1.mvtsMotrices[mot]) if mvt.lot == lot]
-            transfertsInd2 = [(i, mvt) for i, mvt in enumerate(enfant2.mvtsMotrices[mot]) if mvt.lot == lot]
-            # Transfert des mvts de ind1 vers ind2
+            transfertsInd1 = [(i, mvt) for i, mvt in enumerate(ind1.mvtsMotrices[mot]) if mvt.lot == lot]
+            transfertsInd2 = [(i, mvt) for i, mvt in enumerate(ind2.mvtsMotrices[mot]) if mvt.lot == lot]
             for i, _ in reversed(transfertsInd1):
                 del enfant1.mvtsMotrices[mot][i]
+            for i, _ in reversed(transfertsInd2):
+                del enfant2.mvtsMotrices[mot][i]
+            # Transfert des mvts de ind1 vers ind2
             for i, mvt in transfertsInd1:
                 insertAt = min(i, len(enfant2.mvtsMotrices[mot]))
                 enfant2.mvtsMotrices[mot].insert(insertAt, mvt)
             # Transfert des mvts de ind2 vers ind1
-            for i, _ in reversed(transfertsInd2):
-                del enfant2.mvtsMotrices[mot][i]
             for i, mvt in transfertsInd2:
                 insertAt = min(i, len(enfant1.mvtsMotrices[mot]))
                 enfant1.mvtsMotrices[mot].insert(insertAt, mvt)
 
         return creator.Individual(enfant1), creator.Individual(enfant2)
 
-    def evaluer_individu(ind):
-        sol = simuler_individu(ind)        # Désactiver le tracage
+    @lru_cache
+    def evaluer_individu(ind: Individu):
+        sol = simuler_individu(ind, tracage=False)
         return sol.objs
     
     def simuler_individu(ind, tracage=False):
@@ -578,9 +590,6 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             tempsAttenteMots[mot] += config.tempsDesattelage                     # TODO: bloquer aussi le lot pendant la durée du désattelage
             nbWagonsAtteles[mot] -= lot.taille
             indicesEtapesActuelles[lot] += 1
-
-        def action_attendre(mot, duree):
-            tempsAttenteMots[mot] += duree
 
 
         # -------------------------------------------------

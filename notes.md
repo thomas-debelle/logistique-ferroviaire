@@ -1,8 +1,5 @@
 ## Refonte de l'algorithme
-- Corriger les ordres des mouvements générés par les croisements (lancer le programme pour voir).
-
 - Faire en sorte que les lots ne soient pas encore disponibles si le début de la commande n'a pas été atteint (peut être déjà le cas)
-- Créer un cache manuellement (en implémentant une fonction de hash pour les solutions).
 - Attacher des temps d'attente aux mouvements (appliqués avant le début du mouvement).
 - Augmenter les coûts logistiques si les capacités des noeuds ne sont pas respectées.
 - Ajouter une option de retour à la base pour certains motrices (favorisera la coopération).
