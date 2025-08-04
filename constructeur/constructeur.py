@@ -377,6 +377,7 @@ for noeud, data in graphe.nodes(data=True):
         radius = 1
     elif typeNoeud == 'Gare':
         color = "green"
+        radius = 3
     elif typeNoeud == 'Triage':
         color = "brown"
         radius = 5

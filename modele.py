@@ -23,7 +23,7 @@ class Config:
         self.fichierLogs = None
         self.nbLogsMax = 10
 
-        self.nbGenerations = 200
+        self.nbGenerations = 30
         self.taillePopulation = 150
         self.cxpb = 0.85
         self.mutpb = 0.15
@@ -35,23 +35,25 @@ class Config:
 
         self.lambdaTempsAttente = 3.0                   # Paramètre lambda de la loi exponentielle utilisée pour générer les temps d'attente dans les mutations
         self.ecartementMinimal = 8                      # Ecartement minimal (en min) entre deux trains qui se suivent
-        self.tempsAttelage = 10                         # Temps de manoeuvre pour l'attelage
-        self.tempsDesattelage = 5                       # Temps de manoeuvre pour le désattelage
+        self.dureeAttelage = 10                         # Temps de manoeuvre pour l'attelage
+        self.dureeDesattelage = 5                       # Temps de manoeuvre pour le désattelage
         self.horizonTemp = 500                          # Horizon temporel de la simulation
 
-        self.coutMax = 10000                            # Coût maximum appliqué par défaut aux objectifs
+        self.coutMax = 10000                            # Coût logistique maximum, appliqué si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
+        self.coutFixeParMotrice = 0                     # Coût logistique fixe pour chaque motrice utilisée dans le problème
         self.coeffDeplacements = 1.0                    # Coefficient appliqué à l'objectif de déplacement
         self.coeffRetard = 1.0                          # Coefficient appliqué aux coûts de retard à l'arrivée
-        self.coutLotNonLivre = 1000                     # Coût de base d'un lot non livré
         self.coeffDepassementCapaMotrice = 1.0          # Coefficient appliqué aux coûts pour les dépassements de capacité des motrices.
+        self.coeffDepassementCapaNoeud = 0.1
 
 
 
 class Motrice:
-    def __init__(self, index: int, noeudOrigine: int, capacite=50):
+    def __init__(self, index: int, noeudOrigine: int, capacite=50, retourBase=False):
         self.index = index
         self.noeudOrigine = noeudOrigine
         self.capacite = capacite
+        self.retourBase = retourBase
 
     def __str__(self):
         return f'M{self.index}'
@@ -120,11 +122,11 @@ class Sillon:
         return self.__str__()
         
 class Probleme:
-    def __init__(self, graphe: nx.Graph, motrices: list, lots: list):
+    def __init__(self, graphe: nx.Graph, motrices: list, lots: list, blocages: list=[]):
         self.graphe = graphe
         self.motrices = motrices
         self.lots = lots
-        self.blocages = []              # Liste des sillons bloqués par défaut (par exemple, par d'autres compagnies ferroviaires)
+        self.blocages = blocages              # Liste des sillons bloqués par défaut (par exemple, par d'autres compagnies ferroviaires)
 
         indexMotrices = set()
         indexLots = set()
@@ -138,6 +140,9 @@ class Probleme:
                 indexLots.add(lot.index)
             else:
                 error(f"Index en double dans les lots: {lot.index}")
+        for b in self.blocages:
+            if not (b.noeudDebut, b.noeudFin) in self.graphe.edges:
+                warning(f"L'arc ({b.noeudDebut}, {b.noeudFin}) n'existe pas et ne sera pas pris en compte.")
 
 class TypeMouvement(Enum):
     Recuperer = 'Réc.'
@@ -240,6 +245,16 @@ def importer_graphe(cheminGraphe):
 
     return grapheConverti
 
+def lib_noeud(probleme, noeud: int):
+    """
+    Extrait le libellé du noeud. Principalement utilisée pour le déboguage.
+    """
+    data = probleme.graphe.nodes.get(noeud, None)
+    if data:
+        return data.get('libelle', '')
+    else:
+        return ''
+        
 
 def extraire_noeud(graphe: nx.Graph, index: int):
     """
@@ -247,35 +262,30 @@ def extraire_noeud(graphe: nx.Graph, index: int):
     """
     return next((n for n, d in graphe.nodes(data=True) if d.get('index', 0) == index), None)
 
-import heapq
-
-def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):   # TODO: vérifier que les arcs bloqués sont bien pris en compte
-    queue = [(instant, origine)]
+def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):
+    """
+    Implémentation personnalité de Djikstra permettant de filtrer les arcs non-disponibles à chaque instant.
+    Le filtre est une fonction prenant en paramètre (u, v, t) et retournant True ou False (arc disponible ou non).
+    Chaque étape de l'itinéraire retourné est un tuple sous la forme (noeud, instant).
+    """
+    queue = [(instant, origine, [])]      # File de priorité : (tempsCumul, noeudActuel, chemin)
     visites = {}
-    parents = {origine: (None, instant)}
 
     while queue:
-        temps, noeud = heapq.heappop(queue)
+        instantActuel, noeudActuel, chemin = heapq.heappop(queue)
 
-        if noeud in visites and temps >= visites[noeud]:
+        if (noeudActuel in visites) and (instantActuel >= visites[noeudActuel]):
             continue
-        visites[noeud] = temps
+        visites[noeudActuel] = instantActuel
+        chemin = chemin + [(noeudActuel, instantActuel)]
 
-        if noeud == dest:
-            chemin = []
-            while noeud is not None:
-                parent, t = parents[noeud]
-                chemin.append((noeud, t))
-                noeud = parent
-            return list(reversed(chemin))
+        if noeudActuel == dest:
+            return chemin
 
-        for succ, data in graphe[noeud].items():
-            poids = data['weight']
-            if not filtre or filtre(noeud, succ, temps):
-                nouveau_temps = temps + poids
-                if succ not in visites or nouveau_temps < visites.get(succ, float('inf')):
-                    parents[succ] = (noeud, nouveau_temps)
-                    heapq.heappush(queue, (nouveau_temps, succ))
+        for successeur in graphe[noeudActuel]:
+            poids = graphe[noeudActuel][successeur]['weight']
+            if filtre and filtre(noeudActuel, successeur, instantActuel):
+                heapq.heappush(queue, (instantActuel + poids, successeur, chemin))
 
     return None                     # Aucun chemin trouvé
 
@@ -577,25 +587,31 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         # -------------------------------------------------
         def action_recuperer(mot, lot):
             attelages[lot] = mot
-            tempsAttenteMots[mot] += config.tempsAttelage
+            tempsAttenteMots[mot] += config.dureeAttelage
 
             # Gestion des dépassements de capacité pour les motrices
             nbWagonsAtteles[mot] += lot.taille
             if nbWagonsAtteles[mot] > mot.capacite:
                 objCoutsLogistiques += (nbWagonsAtteles - mot.capacite) * config.coeffDepassementCapaMotrice
+            return True
 
         def action_deposer(mot, lot):
             attelages[lot] = None
             derniersNoeudsLots[lot] = derniersNoeudsMots[mot]                    # Mise à jour de la position du lot avant son désattelage
-            tempsAttenteMots[mot] += config.tempsDesattelage                     # TODO: bloquer aussi le lot pendant la durée du désattelage
+            tempsAttenteMots[mot] += config.dureeDesattelage                     # TODO: bloquer aussi le lot pendant la durée du désattelage
             nbWagonsAtteles[mot] -= lot.taille
             indicesEtapesActuelles[lot] += 1
+            return True
 
 
         # -------------------------------------------------
         # Boucle temporelle
         # -------------------------------------------------
+        objCoutsLogistiques += len(probleme.motrices) * config.coutFixeParMotrice       # Application des coûts fixes
         for t in range(config.horizonTemp):
+            # Initialisation de l'occupation
+            occupationNoeuds = {}                                       # Nombre d'éléments occupant des noeuds du réseau
+
             # Mise à jour du traçage (si activé)
             if tracage:
                 for mot in probleme.motrices:
@@ -614,12 +630,15 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
                 # Si tous les mouvements ont été traitées, la motrice a terminé son travail
                 if indicesMvtsActuels[mot] >= len(ind.mvtsMotrices[mot]):
-                    continue
-                mvtActuel = ind.mvtsMotrices[mot][indicesMvtsActuels[mot]]
-
-                # Extraction du noeud actuel
-                lotCible = mvtActuel.lot
-                noeudCible = ind.etapesLots[lotCible][mvtActuel.etape]
+                    if mot.retourBase and derniersNoeudsMots[mot] != mot.noeudOrigine:      # Si la motrice doit rentrer à la base
+                        noeudCible = mot.noeudOrigine
+                        mvtActuel = None                # Le retour à la base est en dehors des mouvements de l'individu
+                    else:
+                        continue
+                else:
+                    mvtActuel = ind.mvtsMotrices[mot][indicesMvtsActuels[mot]]
+                    lotCible = mvtActuel.lot
+                    noeudCible = ind.etapesLots[lotCible][mvtActuel.etape]
 
                 # Génération d'un nouvel itinéraire
                 if derniersNoeudsMots[mot] != noeudCible and not itinerairesActuels.get(mot, None):
@@ -670,15 +689,13 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         itinerairesActuels[mot] = None                                                              # Neutralisation de l'itinéraire
                         objDeplacement += dureeItineraire * config.coeffDeplacements                                # Application de la pénalité de déplacement
 
-                # Application de l'action liée au mouvement
-                if derniersNoeudsMots[mot] == noeudCible:
-                    actionValide = False            # Pour les mouvements dépendants des lots : vérifie que le lot est bien à l'étape actuelle
-                    if mvtActuel.type == TypeMouvement.Recuperer and indicesEtapesActuelles[mvtActuel.lot] == mvtActuel.etape:
-                        action_recuperer(mot, mvtActuel.lot)
-                        actionValide = True
+                # Application de l'action liée au mouvement (pas d'action dans le cas d'un retour base)
+                if (not mvtActuel is None) and derniersNoeudsMots[mot] == noeudCible:
+                    actionValide = False            # Pour les récups: vérifie que le lot est bien à l'étape cible et que la commande a bien commencé
+                    if mvtActuel.type == TypeMouvement.Recuperer and indicesEtapesActuelles[mvtActuel.lot] == mvtActuel.etape and t >= mvtActuel.lot.debutCommande:
+                        actionValide = action_recuperer(mot, mvtActuel.lot)
                     elif mvtActuel.type == TypeMouvement.Deposer and attelages[mvtActuel.lot] == mot:
-                        action_deposer(mot, mvtActuel.lot)
-                        actionValide = True
+                        actionValide = action_deposer(mot, mvtActuel.lot)
 
                     # Passage au mouvement suivant
                     if actionValide:
@@ -690,7 +707,14 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 if attelages.get(lot, None):
                     derniersNoeudsLots[lot] = derniersNoeudsMots[attelages[lot]]
 
-                # Si le lot n'a pas encore atteint sa destination, pas de traitements supplémentaires
+                # Calcul de l'occupation des noeuds du réseau
+                if attelages.get(lot, None) is None:
+                    noeudLot = derniersNoeudsLots[lot]
+                    if not noeudLot in occupationNoeuds:
+                        occupationNoeuds[noeudLot] = 0
+                    occupationNoeuds[noeudLot] += lot.taille
+
+                # Si le lot n'a pas encore atteint sa destination (étape suivante), pas de traitements supplémentaires
                 if attelages.get(lot, None) or derniersNoeudsLots[lot] != lot.noeudDest:
                     continue
 
@@ -700,6 +724,10 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         objCoutsLogistiques += (t - lot.finCommande) * config.coeffRetard           # La pénalité correspond au nombre d'instants écoulé depuis la fin de la commande
                     nbLotsValides += 1
                     lotsValides[lot] = True
+
+            # Pénalisation des excès de capacité
+            for noeud, occ in occupationNoeuds.items():
+                objCoutsLogistiques += config.coeffDepassementCapaNoeud * max(occ - probleme.graphe.nodes[noeud]['capacite'], 0)
 
         # Finalisation de la simulation
         if nbLotsValides < len(probleme.lots):
@@ -771,9 +799,10 @@ def main():
 
     # Importation du problème
     graphe = importer_graphe(config.cheminGraphe)
-    motrices = [Motrice(0, 183), Motrice(1, 261), Motrice(2, 270)]
+    motrices = [Motrice(0, 183, retourBase=True), Motrice(1, 261, retourBase=True), Motrice(2, 270, retourBase=True)]
     lots = [Lot(0, 280, 277, 0, 300), Lot(1, 270, 172, 0, 300), Lot(2, 270, 244, 0, 300)]
-    probleme = Probleme(graphe, motrices, lots)
+    blocages = [Sillon(11, 117, 0, 1000)]
+    probleme = Probleme(graphe, motrices, lots, blocages)
 
     # Résolution du problème
     resoudre_probleme(config, probleme)

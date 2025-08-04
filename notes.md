@@ -1,8 +1,5 @@
 ## Refonte de l'algorithme
-- Faire en sorte que les lots ne soient pas encore disponibles si le début de la commande n'a pas été atteint (peut être déjà le cas)
 - Attacher des temps d'attente aux mouvements (appliqués avant le début du mouvement).
-- Augmenter les coûts logistiques si les capacités des noeuds ne sont pas respectées.
-- Ajouter une option de retour à la base pour certains motrices (favorisera la coopération).
 - Bloquer aussi le lot pendant la durée du désattelage (supprimer l'attelage uniquement à la fin de la durée ?).
 - Traiter tous les TODO
 
@@ -10,11 +7,6 @@
 ## TODO - développement
 - Afficher les solutions et leur évolution. Faire en sorte d'afficher le graphe en respectant ls positions géographiques pour les noeuds. (from folium.plugins import TimestampedGeoJson)
 - Construire les premières expériences. Chercher des informations économiques pour construire une carnet de commandes (si possible).
-
-### Bonus
-- Considérer le nombre de motrices utilisées dans le problème comme un coût logistique fixe (utile pour le finetuing).
-- Considérer le fait que l'attelage de wagon est LIFO. Augmenter les coûts logistique si le LIFO n'est pas respecté.
-
 
 
 
