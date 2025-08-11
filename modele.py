@@ -115,6 +115,7 @@ class Sillon:
         self.motrice = motrice
 
     def est_dans_sillon(self, u, v, t):
+        # TODO: gérer les cas où u et v ne sont pas directement connectée par une arête.
         return (u == self.noeudDebut and v == self.noeudFin and t >= self.tempsDebut and t < self.tempsFin)
     
     def __str__(self):
@@ -146,6 +147,10 @@ class Probleme:
             if not (b.noeudDebut, b.noeudFin) in self.graphe.edges:
                 warning(f"L'arc ({b.noeudDebut}, {b.noeudFin}) n'existe pas et ne sera pas pris en compte.")
 
+# TODO: ajouter les temps d'attente 
+# - Soit comme un délai qui doit être écoulé avant d'initer un mouvement
+# - Soit comme type de mouvement spécifique
+# Donne aux motrices une possibilité de temporisation supplémentaire, mais apporte peu dans les faits.
 class TypeMouvement(Enum):
     Recuperer = 'Réc.'
     Deposer = 'Dép.'
@@ -678,8 +683,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
                         blocagesItineraires.append(Sillon(u[0], v[0], debutParcours, debutParcours+config.ecartementMinimal, mot))      # Ajout des sillons bloqués
                         if probleme.graphe.edges[u[0], v[0]]['exploit'] == 'Simple':
+                            # Blocage du sens opposé dans le cas où l'exploitation est à voie unique
                             blocagesItineraires.append(Sillon(v[0], u[0], debutParcours, finParcours+config.ecartementMinimal, mot))
-                        pass            # TODO: Traiter les cas où la durée est à 0 (passage immédiatement au mouvement suivant)
+                        # TODO: Traiter les cas où la durée est à 0 (passage immédiatement au mouvement suivant. Dans les faits, avoir un itinéraire complet avec un coût nul est très rare) 
 
                 # Calcul de l'avancée sur l'itinéraire actuel
                 if itinerairesActuels[mot]:
