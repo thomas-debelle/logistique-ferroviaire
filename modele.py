@@ -23,12 +23,10 @@ class Config:
         self.fichierLogs = None
         self.nbLogsMax = 10
 
-        self.nbGenerations = 30
+        self.nbGenerations = 60
         self.taillePopulation = 150
         self.cxpb = 0.85
         self.mutpb = 0.15
-        self.pbOpeEtapes = 0.5                          # Probabilité que les étapes soient sujettes à des mutations ou des croisements
-        # self.pbOpeMvts = 1 - self.pbOpeEtapes           # Probabilité que les mouvements soient sujettes à des mutations ou des croisements
 
         self.cheminGraphe = 'graphe_ferroviaire.graphml'
         self.nbMvtParMot = 5                            # Nom de mouvements max par lot dans une solution
@@ -37,7 +35,7 @@ class Config:
         self.ecartementMinimal = 8                      # Ecartement minimal (en min) entre deux trains qui se suivent
         self.dureeAttelage = 10                         # Temps de manoeuvre pour l'attelage
         self.dureeDesattelage = 5                       # Temps de manoeuvre pour le désattelage
-        self.horizonTemp = 500                          # Horizon temporel de la simulation
+        self.horizonTemp = 600                          # Horizon temporel de la simulation
 
         self.coutMax = 10000                            # Coût logistique maximum, appliqué si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
         self.coutFixeParMotrice = 0                     # Coût logistique fixe pour chaque motrice utilisée dans le problème
@@ -49,11 +47,15 @@ class Config:
 
 
 class Motrice:
-    def __init__(self, index: int, noeudOrigine: int, capacite=50, retourBase=False):
+    def __init__(self, index: int, noeudOrigine: int, capacite=50, retourBase=False, taille=2):
+        """
+        taille: taux d'occupation du noeud lorsque la motrice est en attente.
+        """
         self.index = index
         self.noeudOrigine = noeudOrigine
         self.capacite = capacite
         self.retourBase = retourBase
+        self.taille = taille
 
     def __str__(self):
         return f'M{self.index}'
@@ -559,6 +561,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         blocagesItineraires = []                                    # Blocages générés par les itinéraires
 
         tempsAttenteMots = dict.fromkeys(probleme.motrices, 0)      # Temps d'attente restant pour chaque motrice
+        tempsAttenteLots = dict.fromkeys(probleme.lots, 0)          # Temps d'attente restant pour chaque lot (lors du désattelage)
         nbWagonsAtteles = dict.fromkeys(probleme.motrices, 0)       # Nombre de wagons attelés pour chaque motrice
 
         objCoutsLogistiques = 0         # Objectif de coûts d'exploitation de la solution
@@ -598,7 +601,8 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         def action_deposer(mot, lot):
             attelages[lot] = None
             derniersNoeudsLots[lot] = derniersNoeudsMots[mot]                    # Mise à jour de la position du lot avant son désattelage
-            tempsAttenteMots[mot] += config.dureeDesattelage                     # TODO: bloquer aussi le lot pendant la durée du désattelage
+            tempsAttenteMots[mot] += config.dureeDesattelage
+            tempsAttenteLots[lot] += config.dureeDesattelage                     # Le lot est également bloqué durant son désattelage
             nbWagonsAtteles[mot] -= lot.taille
             indicesEtapesActuelles[lot] += 1
             return True
@@ -610,7 +614,11 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         objCoutsLogistiques += len(probleme.motrices) * config.coutFixeParMotrice       # Application des coûts fixes
         for t in range(config.horizonTemp):
             # Initialisation de l'occupation
-            occupationNoeuds = {}                                       # Nombre d'éléments occupant des noeuds du réseau
+            occupationNoeuds = {}                                       # Nombre d'éléments occupant chaque noeud du réseau
+            def ajouter_occupation(noeud, occ):
+                if not noeud in occupationNoeuds:
+                    occupationNoeuds[noeud] = 0
+                occupationNoeuds[noeud] += occ
 
             # Mise à jour du traçage (si activé)
             if tracage:
@@ -623,16 +631,17 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
             # Simulation des motrices
             for mot in probleme.motrices:
-                # Si la motrice est en attente, elle n'est pas évaluée à cette instant
+                # Si la motrice est en attente, elle n'est pas évaluée à cette instant. Cependant, elle rentre dans le calcul de l'occupation
                 if tempsAttenteMots[mot] > 0:
                     tempsAttenteMots[mot] -= 1
+                    ajouter_occupation(derniersNoeudsMots[mot], mot.taille)
                     continue
 
                 # Si tous les mouvements ont été traitées, la motrice a terminé son travail
                 if indicesMvtsActuels[mot] >= len(ind.mvtsMotrices[mot]):
                     if mot.retourBase and derniersNoeudsMots[mot] != mot.noeudOrigine:      # Si la motrice doit rentrer à la base
                         noeudCible = mot.noeudOrigine
-                        mvtActuel = None                # Le retour à la base est en dehors des mouvements de l'individu
+                        mvtActuel = None                # Le retour à la base est un déplacement spécial en dehors des mouvements de l'individu
                     else:
                         continue
                 else:
@@ -691,9 +700,14 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
                 # Application de l'action liée au mouvement (pas d'action dans le cas d'un retour base)
                 if (not mvtActuel is None) and derniersNoeudsMots[mot] == noeudCible:
-                    actionValide = False            # Pour les récups: vérifie que le lot est bien à l'étape cible et que la commande a bien commencé
-                    if mvtActuel.type == TypeMouvement.Recuperer and indicesEtapesActuelles[mvtActuel.lot] == mvtActuel.etape and t >= mvtActuel.lot.debutCommande:
+                    actionValide = False            
+                    # Pour Récupérer: vérifie que le lot est bien à l'étape cible, n'est pas en attente, et que la commande a bien commencé
+                    if (mvtActuel.type == TypeMouvement.Recuperer 
+                        and indicesEtapesActuelles[mvtActuel.lot] == mvtActuel.etape
+                        and tempsAttenteLots[mvtActuel.lot] == 0 
+                        and t >= mvtActuel.lot.debutCommande):
                         actionValide = action_recuperer(mot, mvtActuel.lot)
+                    # Pour Déposer: vérifie que le lot est bien attelé à la motrice
                     elif mvtActuel.type == TypeMouvement.Deposer and attelages[mvtActuel.lot] == mot:
                         actionValide = action_deposer(mot, mvtActuel.lot)
 
@@ -703,16 +717,18 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
             # Simulation des lots
             for lot in probleme.lots:
-                # Mise à jour de la position de la motrice
+                # Mise à jour de la position du lot par rapport à son attelage
                 if attelages.get(lot, None):
                     derniersNoeudsLots[lot] = derniersNoeudsMots[attelages[lot]]
 
                 # Calcul de l'occupation des noeuds du réseau
                 if attelages.get(lot, None) is None:
                     noeudLot = derniersNoeudsLots[lot]
-                    if not noeudLot in occupationNoeuds:
-                        occupationNoeuds[noeudLot] = 0
-                    occupationNoeuds[noeudLot] += lot.taille
+                    ajouter_occupation(noeudLot, lot.taille)
+
+                # Décrémentation du temps d'attente du lot
+                if tempsAttenteLots[lot] > 0:
+                    tempsAttenteLots[lot] -= 1
 
                 # Si le lot n'a pas encore atteint sa destination (étape suivante), pas de traitements supplémentaires
                 if attelages.get(lot, None) or derniersNoeudsLots[lot] != lot.noeudDest:
