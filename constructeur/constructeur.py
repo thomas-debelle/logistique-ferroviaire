@@ -1,12 +1,13 @@
 import pandas as pd
 import networkx as nx
 import json
+from math import atan2, radians, degrees, sin, cos
 from geopy.distance import geodesic
-import matplotlib.pyplot as plt
 from scipy.spatial import KDTree
 import numpy as np
 import sys
 import folium
+from itertools import combinations
 
 # -------------------------------------
 # Fonctions
@@ -33,7 +34,36 @@ def convertir_latlon_xy(lat, lon):
     y = rayonTerre * np.radians(lat)
     return (x, y)
 
+def calculer_azimut(lat1, lon1, lat2, lon2):
+    """
+    Calcule l'azimut: angle dans le plan horizontal enre la direction d'un objet et un direction de référence.
+    """
+    # Conversion degrés - radians
+    lat1_rad, lon1_rad = radians(lat1), radians(lon1)
+    lat2_rad, lon2_rad = radians(lat2), radians(lon2)
+
+    d_lon = lon2_rad - lon1_rad
+    x = sin(d_lon) * cos(lat2_rad)
+    y = cos(lat1_rad) * sin(lat2_rad) - sin(lat1_rad) * cos(lat2_rad) * cos(d_lon)
+    azimut = degrees(atan2(x, y))
+    return (azimut + 360) % 360  # Normalisation 0–360 degrés
+
+def calculer_angle(latSommet, lonSommet, lat1, lon1, lat2, lon2):
+    """
+    Calcule l'angle entre deux points en utilisant les azimuts.
+    latSommet, lonSommet: coordonnées du sommet de l'angle.
+    """
+    azimut1 = calculer_azimut(latSommet, lonSommet, lat1, lon1)
+    azimut2 = calculer_azimut(latSommet, lonSommet, lat2, lon2)
+
+    angle = abs(azimut1 - azimut2) % 360
+    angle = min(angle, 360 - angle)         # Angle le plus petit (<= 180°)
+    return angle
+
 def longueur_chemin_graphe_safe(graphe, source, target):
+    """
+    Variante safe pour calculer la longueur d'un chemin. Si aucun chemin n'est trouvé, retourne une très grande valeur.
+    """
     try:
         longueur = nx.shortest_path_length(graphe, source=source, target=target)
         return longueur
@@ -66,30 +96,43 @@ def est_dans_zone(point, latMin, latMax, lonMin, lonMax):
     return latMin <= lat <= latMax and lonMin <= lon <= lonMax
 
 def simplifier_graphe(G, iter=100):
+    # Fonction pour mise à jour des transitions bloquées
+    def maj_transitions(noeudCible, ancienVoisin, nouveauVoisin):
+        transBloquees = graphe.nodes[noeudCible]['Transitions bloquées']       # Parcoure les transitions bloquées du premier voisin
+        if len(transBloquees) > 0:
+            for i, (n1, n2) in enumerate(transBloquees):
+                if n1 == ancienVoisin:
+                    transBloquees[i] = (nouveauVoisin, n2)
+                elif n2 == ancienVoisin:
+                    transBloquees[i] = (n1, nouveauVoisin)       # Nouveau noeud source de la transition
+
     grapheSimplifie = G.copy()
-
-    for _ in range(iter):
+    for _ in range(iter):       # Simplification en plusieurs itérations
         noeudsASupprimer = []
-        for node in list(grapheSimplifie.nodes):
-            type_node = grapheSimplifie.nodes[node].get("typeNoeud")
-            if type_node in ['Triage', 'ITE']:
-                continue
+        for noeud in list(grapheSimplifie.nodes):
+            typeNoeud = grapheSimplifie.nodes[noeud].get("typeNoeud")
+            if typeNoeud != 'Croisement':
+                continue        # Pas de simplification possible si le noeud n'est pas un croisement
 
-            voisins = list(grapheSimplifie.neighbors(node))
+            voisins = list(grapheSimplifie.neighbors(noeud))
             if len(voisins) == 2:
-                v1, v2 = voisins
+                v1, v2 = voisins        # Sélection des deux voisins à relier
                 if grapheSimplifie.has_edge(v1, v2):
-                    continue  # Éviter les doublons
+                    continue  # Si une arête existe déjà, pas d'opération à réaliser
 
                 # Récupération des poids et calcul du poids total 
-                data1 = grapheSimplifie.get_edge_data(node, v1)
-                data2 = grapheSimplifie.get_edge_data(node, v2)
+                data1 = grapheSimplifie.get_edge_data(noeud, v1)
+                data2 = grapheSimplifie.get_edge_data(noeud, v2)
                 poidsTotal = data1['weight'] + data2['weight']
                 typeExploit = 'Double' if (data1['exploit'] == 'Double' and data2['exploit'] == 'Double') else 'Simple'
 
+                # Modification des transitions bloquées pour les deux voisins à relier
+                maj_transitions(v1, noeud, v2)
+                maj_transitions(v2, noeud, v1)      # Suppression de 'noeud' comme intermédiaire entre v1 et v2 dans les transitions
+
                 # Fusion des arêtes
                 grapheSimplifie.add_edge(v1, v2, weight=poidsTotal, exploit=typeExploit)
-                noeudsASupprimer.append(node)
+                noeudsASupprimer.append(noeud)
 
         grapheSimplifie.remove_nodes_from(noeudsASupprimer)
 
@@ -117,8 +160,8 @@ def coef_vitesse_fret(vMaxNominale):
     
 def reindexer_graphe(graphe):
     """
-    Parcoure tous les noeuds du graphe et leur attribut un nouvel index.
-    Les coordonnées restent stockées dans un attribut.
+    Parcoure tous les noeuds du graphe indexé par les coordonnées, et leur attribut un index numérique.
+    Les coordonnées sont stockées dans un attribut.
     """
     # Réinitialisation de l'index
     idn = 1
@@ -130,8 +173,21 @@ def reindexer_graphe(graphe):
 
     # Création du mapping : ancien id -> nouvel id
     mapping = {n: graphe.nodes[n]['index'] for n in graphe.nodes}
+
+    # Application du mapping aux transitions
+    for noeud in graphe.nodes:
+        transBloquees = graphe.nodes[noeud]['Transitions bloquées']
+        for i, t in enumerate(transBloquees):
+            transBloquees[i] = tuple(sorted([mapping[t[0]], mapping[t[1]]]))        # Application du mapping avec tri, pour que les indices soient dans l'ordre croissant dans les transitions bloquées
+
+    # Finalisation de la réindexation
     return nx.relabel_nodes(graphe, mapping)
 
+def rendre_graphe_immuable(graphe):
+    for noeud in graphe.nodes:
+        transitionsImmuables = json.dumps(graphe.nodes[noeud]['Transitions bloquées'])
+        graphe.nodes[noeud]['Transitions bloquées'] = transitionsImmuables
+    return graphe
 
 
 # -------------------------------------
@@ -148,6 +204,8 @@ cheminFichierChantiers = 'constructeur/données/chantiers-de-transport-combines.
 vitesseParDefaut = 160          # Par défaut si la vitesse n'est pas renseignée dans les données.
 vitesseNominaleMax = 220        # Les lignes dont la vitesse nominale max est supérieure à cette valeur sont exclues du graphe.
 rayonRaccordements = 400        # Rayon de recherche pour raccorder les extrémités des lignes.
+angleVirageMax = 45             # Angle de virage à partir duquel une transition n'est plus autorisée à une intersection (l'angle ne correspond pas nécessairement à une spécification technique).
+
 statutsLigneAutorises = ['Exploitée', 'Transférée en voie de service']      # Statut des lignes pouvant être ajoutées au graphe
 exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # Type d'exploitation en voies doubles
 nbCarIndex = 6                  # Nombre de caractères pour formatter l'affichage de l'index des noeuds
@@ -164,20 +222,20 @@ arrondirDurees = True
 #latMin = -90
 #latMax = 90
 # Coordonnées de la Bretagne (pour les tests)
-lonMin = -4.70         
-lonMax = -1.169
-latMin = 46.68
-latMax = 49.00
+#lonMin = -4.70         
+#lonMax = -1.169
+#latMin = 46.68
+#latMax = 49.00
 # Coordonnées de l'Auvergne-Rhône-Alpes
 #lonMin = 2.06  
 #lonMax = 7.68 
 #latMin = 44.39 
 #latMax = 46.78
 # Coordonnées du Berry
-#lonMin = 1.41
-#lonMax = 3.30
-#latMin = 46.56
-#latMax = 47.33 
+lonMin = 1.41
+lonMax = 3.30
+latMin = 46.56
+latMax = 47.33 
 
 
 
@@ -248,7 +306,7 @@ for _, gare in dfGares.iterrows():
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax) or gare['FRET'] != 'O':
         continue
-    graphe.add_node(coords, index=idn, type='Gare', libelle=gare['LIBELLE'], capacite=capacitesParType['Gare'])
+    graphe.add_node(coords, index=idn, typeNoeud='Gare', libelle=gare['LIBELLE'], capacite=capacitesParType['Gare'])
     idn += 1
 
 # Ajout des noeuds de triage
@@ -257,7 +315,7 @@ for _, triage in dfTriages.iterrows():
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, index=idn, type='Triage', libelle=triage['LIBELLE'], capacite=capacitesParType['Triage'])     # Si une gare et un triage sont à la même position, le triage prend le dessus.
+    graphe.add_node(coords, index=idn, typeNoeud='Triage', libelle=triage['LIBELLE'], capacite=capacitesParType['Triage'])     # Si une gare et un triage sont à la même position, le triage prend le dessus.
     idn += 1
 
 # Ajout des noeuds d'ITE
@@ -266,7 +324,7 @@ for _, ite in dfITE.iterrows():
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, index=idn, type='ITE', libelle=ite['GARE'], capacite=capacitesParType['ITE'])
+    graphe.add_node(coords, index=idn, typeNoeud='ITE', libelle=ite['GARE'], capacite=capacitesParType['ITE'])
     idn += 1
 
 # Ajout des noeuds de chantier
@@ -274,7 +332,7 @@ for _, chantier in dfChantiers.iterrows():
     coords = (float(chantier['Latitude']), float(chantier['Longitude']))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax):
         continue
-    graphe.add_node(coords, index=idn, type='Chantier', libelle=chantier['VILLE'].capitalize(), capacite=capacitesParType['Chantier'])
+    graphe.add_node(coords, index=idn, typeNoeud='Chantier', libelle=chantier['VILLE'].capitalize(), capacite=capacitesParType['Chantier'])
     idn += 1
 
 
@@ -329,11 +387,28 @@ for noeud in graphe.nodes:
             if noeudProche:
                 graphe.add_edge(noeud, noeudProche, weight=0, exploit='Double')           # Poids nul car on suppose un raccordement direct
 
+# Construction des transitions bloquées (en fonction des angles d'arrivée et de départ des trains)
+for noeud in graphe.nodes:
+    graphe.nodes[noeud]['Transitions bloquées'] = []
+    voisins = sorted(list(graphe.neighbors(noeud)))      # Tri lexicographique des coordonnées (pour s'assurer que les combinaisons soient toujours dans le bon ordre)
+    if len(voisins) <= 2:
+        continue          # Toutes les transitions sont autorisées s'il y a moins de 3 noeuds
+    # Sinon, calcul des angles entre toutes les paires de noeuds voisins
+    for paireVoisins in list(combinations(voisins, 2)):
+        voisin1 = paireVoisins[0]
+        voisin2 = paireVoisins[1]
+        angleVirage = 180 - calculer_angle(noeud[0], noeud[1], voisin1[0], voisin1[1], voisin2[0], voisin2[1])      # Calcul l'angle de virage entre les deux noeuds
+        if (angleVirage > angleVirageMax
+            and graphe.edges[(paireVoisins[0], noeud)]['weight'] > 0 
+            and graphe.edges[(paireVoisins[1], noeud)]['weight'] > 0):              # Si l'un des poids est nul, le noeud a été raccordé lors du retraitement, et la transition ne doit pas être sanctionnée
+            graphe.nodes[noeud]['Transitions bloquées'].append(paireVoisins)        # Blocage des virages avec des angles trop élevés
+
 
 # Application des simplifications
 graphe = simplifier_graphe(graphe)
 graphe = extraire_composante_principale(graphe)
 graphe = reindexer_graphe(graphe)
+graphe = rendre_graphe_immuable(graphe)     # Rend le graphe immuable (en convertissant les listes et tuples en chaînes de caractères avec json.dumps)
 
 
 # ------------------------------------------
@@ -367,9 +442,11 @@ for u, v, data in graphe.edges(data=True):
     ).add_to(map)
 
 # Ajout des nœuds selon leur type
+groupeCroisements = folium.FeatureGroup(name='Croisements')
+groupeStockages = folium.FeatureGroup(name='Stockage')
 for noeud, data in graphe.nodes(data=True):
     lat, lon = data['lat'], data['lon']
-    typeNoeud = data.get("type", 'Croisement')
+    typeNoeud = data.get("typeNoeud", 'Croisement')
 
     radius = 3
     if typeNoeud == 'Croisement':
@@ -389,18 +466,34 @@ for noeud, data in graphe.nodes(data=True):
     else:
         color = "gray"
 
+    # Création du marqueur
     idnStr = str(data.get("index", "")).zfill(nbCarIndex)
-    folium.CircleMarker(
+    transBloquees = graphe.nodes[noeud]['Transitions bloquées']
+    marqueur = folium.CircleMarker(
         location=(lat, lon),
         radius=radius,
         color=color,
         fill=True,
         fill_color=color,
         fill_opacity=0.8,
-        tooltip=(str(f'[{idnStr}] ' + typeNoeud + ' - ' + data.get("libelle", "")) if typeNoeud != 'Croisement' else f'[{idnStr}] Noeud')
-    ).add_to(map)
+        tooltip=(str(f'<b>[{idnStr}]</b> ' 
+                     + typeNoeud + ' - ' + (data.get("libelle", "")) if typeNoeud != 'Croisement' else f'[{idnStr}] Noeud') 
+                     + '<br><b>Transitions bloquées</b> : ' + str(transBloquees) if len(transBloquees) > 0 else '')
+    )
+
+    # Ajout du marqueur au bon groupe
+    if typeNoeud == 'Croisement':
+        marqueur.add_to(groupeCroisements)
+    else:
+        marqueur.add_to(groupeStockages)
+
+
+# Ajout des groupes à la map       
+groupeCroisements.add_to(map)
+groupeStockages.add_to(map)
+folium.LayerControl().add_to(map)       # Création d'un contrôle pour les différentes couches de marqueurs
 
 # Exportation de la carte et du graphe
 map.save("graphe_ferroviaire.html")
 nx.write_graphml(graphe, "graphe_ferroviaire.graphml")
-print("Graphe sauvegardé.")
+print(f"Graphe sauvegardé ! -- Nb. de noeuds: {len(graphe.nodes)}")
