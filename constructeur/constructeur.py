@@ -95,18 +95,19 @@ def est_dans_zone(point, latMin, latMax, lonMin, lonMax):
     lat, lon = point
     return latMin <= lat <= latMax and lonMin <= lon <= lonMax
 
-def simplifier_graphe(G, iter=100):
+def simplifier_graphe(g, iter=100):
     # Fonction pour mise à jour des transitions bloquées
-    def maj_transitions(noeudCible, ancienVoisin, nouveauVoisin):
-        transBloquees = graphe.nodes[noeudCible]['Transitions bloquées']       # Parcoure les transitions bloquées du premier voisin
-        if len(transBloquees) > 0:
-            for i, (n1, n2) in enumerate(transBloquees):
-                if n1 == ancienVoisin:
-                    transBloquees[i] = (nouveauVoisin, n2)
-                elif n2 == ancienVoisin:
-                    transBloquees[i] = (n1, nouveauVoisin)       # Nouveau noeud source de la transition
+    def maj_transitions(graphe, noeudCible, ancienVoisin, nouveauVoisin):
+        transBloquees = graphe.nodes[noeudCible]['transBloquees']        # Parcoure les transitions bloquées du premier voisin
+        for i, (n1, n2) in enumerate(transBloquees):
+            if n1 == ancienVoisin:
+                transBloquees[i] = (nouveauVoisin, n2)
+            elif n2 == ancienVoisin:
+                transBloquees[i] = (n1, nouveauVoisin)       # Nouveau noeud source de la transition
 
-    grapheSimplifie = G.copy()
+
+    # Processus principal
+    grapheSimplifie = g.copy()
     for _ in range(iter):       # Simplification en plusieurs itérations
         noeudsASupprimer = []
         for noeud in list(grapheSimplifie.nodes):
@@ -115,7 +116,9 @@ def simplifier_graphe(G, iter=100):
                 continue        # Pas de simplification possible si le noeud n'est pas un croisement
 
             voisins = list(grapheSimplifie.neighbors(noeud))
-            if len(voisins) == 2:
+            if len(voisins) == 1:
+                noeudsASupprimer.append(noeud)      # Suppression des noeuds cul-de-sac qui ne sont pas des noeuds de stockage
+            elif len(voisins) == 2:
                 v1, v2 = voisins        # Sélection des deux voisins à relier
                 if grapheSimplifie.has_edge(v1, v2):
                     continue  # Si une arête existe déjà, pas d'opération à réaliser
@@ -127,14 +130,24 @@ def simplifier_graphe(G, iter=100):
                 typeExploit = 'Double' if (data1['exploit'] == 'Double' and data2['exploit'] == 'Double') else 'Simple'
 
                 # Modification des transitions bloquées pour les deux voisins à relier
-                maj_transitions(v1, noeud, v2)
-                maj_transitions(v2, noeud, v1)      # Suppression de 'noeud' comme intermédiaire entre v1 et v2 dans les transitions
+                maj_transitions(grapheSimplifie, v1, noeud, v2)
+                maj_transitions(grapheSimplifie, v2, noeud, v1)      # Suppression de 'noeud' comme intermédiaire entre v1 et v2 dans les transitions
 
                 # Fusion des arêtes
                 grapheSimplifie.add_edge(v1, v2, weight=poidsTotal, exploit=typeExploit)
                 noeudsASupprimer.append(noeud)
 
         grapheSimplifie.remove_nodes_from(noeudsASupprimer)
+
+    # Epurage des transitions après suppression de noeuds
+    for noeud in grapheSimplifie.nodes:
+        transBloquees = grapheSimplifie.nodes[noeud]['transBloquees']
+        transASuppr = []
+        for t in transBloquees:
+            if (not t[0] in grapheSimplifie.nodes) or (not t[1] in grapheSimplifie.nodes):
+                transASuppr.append(t)
+        for t in transASuppr:
+            transBloquees.remove(t)
 
     return grapheSimplifie
 
@@ -176,7 +189,7 @@ def reindexer_graphe(graphe):
 
     # Application du mapping aux transitions
     for noeud in graphe.nodes:
-        transBloquees = graphe.nodes[noeud]['Transitions bloquées']
+        transBloquees = graphe.nodes[noeud]['transBloquees']
         for i, t in enumerate(transBloquees):
             transBloquees[i] = tuple(sorted([mapping[t[0]], mapping[t[1]]]))        # Application du mapping avec tri, pour que les indices soient dans l'ordre croissant dans les transitions bloquées
 
@@ -185,8 +198,8 @@ def reindexer_graphe(graphe):
 
 def rendre_graphe_immuable(graphe):
     for noeud in graphe.nodes:
-        transitionsImmuables = json.dumps(graphe.nodes[noeud]['Transitions bloquées'])
-        graphe.nodes[noeud]['Transitions bloquées'] = transitionsImmuables
+        transitionsImmuables = json.dumps(graphe.nodes[noeud]['transBloquees'])
+        graphe.nodes[noeud]['transBloquees'] = transitionsImmuables
     return graphe
 
 
@@ -204,38 +217,54 @@ cheminFichierChantiers = 'constructeur/données/chantiers-de-transport-combines.
 vitesseParDefaut = 160          # Par défaut si la vitesse n'est pas renseignée dans les données.
 vitesseNominaleMax = 220        # Les lignes dont la vitesse nominale max est supérieure à cette valeur sont exclues du graphe.
 rayonRaccordements = 400        # Rayon de recherche pour raccorder les extrémités des lignes.
-angleVirageMax = 45             # Angle de virage à partir duquel une transition n'est plus autorisée à une intersection (l'angle ne correspond pas nécessairement à une spécification technique).
+angleVirageMax = 35             # Angle de virage à partir duquel une transition n'est plus autorisée à une intersection (l'angle ne correspond pas nécessairement à une spécification technique).
 
 statutsLigneAutorises = ['Exploitée', 'Transférée en voie de service']      # Statut des lignes pouvant être ajoutées au graphe
 exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # Type d'exploitation en voies doubles
 nbCarIndex = 6                  # Nombre de caractères pour formatter l'affichage de l'index des noeuds
 capacitesParType = {            # Capacité par défaut, en nombre d'éléments (wagons + motrices) pour chaque type de noeud
-    'Gare': 50,
-    'Chantier': 250,
+    'Gare Fret': 50,
+    'Chantier': 300,
     'ITE': 50,
     'Triage': 1000
 }           # A l'avenir, permettre à l'utilisateur de configurer noeud par noeud les capacités
 arrondirDurees = True
 
+# -------------------------------------
+# Exemples de cartes
+# -------------------------------------
+# Coordonnées globales
 #lonMin = -90
 #lonMax = 90
 #latMin = -90
 #latMax = 90
-# Coordonnées de la Bretagne (pour les tests)
-#lonMin = -4.70         
+# Coordonnées de la Bretagne
+#lonMin = -4.70
 #lonMax = -1.169
 #latMin = 46.68
 #latMax = 49.00
-# Coordonnées de l'Auvergne-Rhône-Alpes
-#lonMin = 2.06  
-#lonMax = 7.68 
-#latMin = 44.39 
-#latMax = 46.78
+#Coordonnées de l'Auvergne-Rhône-Alpes
+lonMin = 2.06  
+lonMax = 7.68 
+latMin = 44.39 
+latMax = 46.78
 # Coordonnées du Berry
-lonMin = 1.41
-lonMax = 3.30
-latMin = 46.56
-latMax = 47.33 
+#lonMin = 1.41
+#lonMax = 3.30
+#latMin = 46.56
+#latMax = 47.33
+# Coordonnées de Provence-Alpes-Côte-d'Azur
+#lonMin = 4.25
+#lonMax = 7.68
+#latMin = 43.00
+#latMax = 44.80
+# Coordonnées de Haute Normandie
+#lonMin = 0.10   # Longitude minimale (ouest)
+#lonMax = 1.75   # Longitude maximale (est)
+#latMin = 48.70  # Latitude minimale (sud)
+#latMax = 49.90  # Latitude maximale (nord)
+
+
 
 
 
@@ -305,8 +334,9 @@ for _, gare in dfGares.iterrows():
     coords = gare['C_GEO'].split(',')
     coords = (float(coords[0]), float(coords[1]))
     if not est_dans_zone(coords, latMin, latMax, lonMin, lonMax) or gare['FRET'] != 'O':
-        continue
-    graphe.add_node(coords, index=idn, typeNoeud='Gare', libelle=gare['LIBELLE'], capacite=capacitesParType['Gare'])
+        continue        # Seules les gares de fret sont ajoutées au réseau
+    capacite = capacitesParType['Gare Fret']
+    graphe.add_node(coords, index=idn, typeNoeud='Gare', libelle=gare['LIBELLE'], capacite=capacite)
     idn += 1
 
 # Ajout des noeuds de triage
@@ -389,7 +419,7 @@ for noeud in graphe.nodes:
 
 # Construction des transitions bloquées (en fonction des angles d'arrivée et de départ des trains)
 for noeud in graphe.nodes:
-    graphe.nodes[noeud]['Transitions bloquées'] = []
+    graphe.nodes[noeud]['transBloquees'] = []
     voisins = sorted(list(graphe.neighbors(noeud)))      # Tri lexicographique des coordonnées (pour s'assurer que les combinaisons soient toujours dans le bon ordre)
     if len(voisins) <= 2:
         continue          # Toutes les transitions sont autorisées s'il y a moins de 3 noeuds
@@ -401,7 +431,7 @@ for noeud in graphe.nodes:
         if (angleVirage > angleVirageMax
             and graphe.edges[(paireVoisins[0], noeud)]['weight'] > 0 
             and graphe.edges[(paireVoisins[1], noeud)]['weight'] > 0):              # Si l'un des poids est nul, le noeud a été raccordé lors du retraitement, et la transition ne doit pas être sanctionnée
-            graphe.nodes[noeud]['Transitions bloquées'].append(paireVoisins)        # Blocage des virages avec des angles trop élevés
+            graphe.nodes[noeud]['transBloquees'].append(paireVoisins)               # Blocage des virages avec des angles trop élevés
 
 
 # Application des simplifications
@@ -443,9 +473,13 @@ for u, v, data in graphe.edges(data=True):
 
 # Ajout des nœuds selon leur type
 groupeCroisements = folium.FeatureGroup(name='Croisements')
-groupeStockages = folium.FeatureGroup(name='Stockage')
+groupeStockages = folium.FeatureGroup(name='Stockages')
 for noeud, data in graphe.nodes(data=True):
+    # Extraction des données
     lat, lon = data['lat'], data['lon']
+    idnStr = str(data.get("index", "")).zfill(nbCarIndex)
+    transBloquees = graphe.nodes[noeud]['transBloquees']
+    capacite = graphe.nodes[noeud]['capacite']
     typeNoeud = data.get("typeNoeud", 'Croisement')
 
     radius = 3
@@ -467,8 +501,6 @@ for noeud, data in graphe.nodes(data=True):
         color = "gray"
 
     # Création du marqueur
-    idnStr = str(data.get("index", "")).zfill(nbCarIndex)
-    transBloquees = graphe.nodes[noeud]['Transitions bloquées']
     marqueur = folium.CircleMarker(
         location=(lat, lon),
         radius=radius,
@@ -478,7 +510,8 @@ for noeud, data in graphe.nodes(data=True):
         fill_opacity=0.8,
         tooltip=(str(f'<b>[{idnStr}]</b> ' 
                      + typeNoeud + ' - ' + (data.get("libelle", "")) if typeNoeud != 'Croisement' else f'[{idnStr}] Noeud') 
-                     + '<br><b>Transitions bloquées</b> : ' + str(transBloquees) if len(transBloquees) > 0 else '')
+                     + '<br><b>Transitions bloquées</b> : ' + str(transBloquees) if len(transBloquees) > 0 else ''
+                     + '<br><b>Capacité</b> : ' + str(capacite))
     )
 
     # Ajout du marqueur au bon groupe

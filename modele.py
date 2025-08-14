@@ -13,6 +13,7 @@ from glob import glob
 from copy import deepcopy
 from frozendict import frozendict
 from functools import lru_cache
+import json
 
 # ---------------------------------------
 # Définition des classes et des types
@@ -244,7 +245,9 @@ def importer_graphe(cheminGraphe):
     
     # Copie des nœuds
     for noeud in grapheOriginal.nodes:
-        grapheConverti.add_node(int(noeud), **grapheOriginal.nodes[noeud])
+        noeudConverti = int(noeud)
+        grapheConverti.add_node(noeudConverti, **grapheOriginal.nodes[noeud])
+        grapheConverti.nodes[noeudConverti]['transBloquees'] = json.loads(grapheConverti.nodes[noeudConverti]['transBloquees'])       # Extraction des transitions bloquées
 
     # Copie des arêtes avec conversion des extrémités
     for u, v, data in grapheOriginal.edges(data=True):
@@ -271,15 +274,16 @@ def extraire_noeud(graphe: nx.Graph, index: int):
 
 def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):
     """
-    Implémentation personnalité de Djikstra permettant de filtrer les arcs non-disponibles à chaque instant.
-    Le filtre est une fonction prenant en paramètre (u, v, t) et retournant True ou False (arc disponible ou non).
-    Chaque étape de l'itinéraire retourné est un tuple sous la forme (noeud, instant).
+    Variante de Dijkstra permettant de filtrer les arcs en fonction de l'instant
+    et du dernier nœud visité.
+    - filtre(u, v, t, prev) -> True si l'arc (u, v) est disponible à l'instant t,
+      sachant que prev est le nœud précédent avant u (ou None pour le départ).
     """
-    queue = [(instant, origine, [])]      # File de priorité : (tempsCumul, noeudActuel, chemin)
+    queue = [(instant, origine, [], None)]  # (tempsCumul, noeudActuel, chemin, noeudPrecedent)
     visites = {}
 
     while queue:
-        instantActuel, noeudActuel, chemin = heapq.heappop(queue)
+        instantActuel, noeudActuel, chemin, noeudPrecedent = heapq.heappop(queue)
 
         if (noeudActuel in visites) and (instantActuel >= visites[noeudActuel]):
             continue
@@ -289,12 +293,13 @@ def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):
         if noeudActuel == dest:
             return chemin
 
-        for successeur in graphe[noeudActuel]:
+        for successeur in graphe[noeudActuel]:      # Parcours des successeurs
             poids = graphe[noeudActuel][successeur]['weight']
-            if filtre and filtre(noeudActuel, successeur, instantActuel):
-                heapq.heappush(queue, (instantActuel + poids, successeur, chemin))
+            if filtre is None or filtre(noeudActuel, successeur, instantActuel, noeudPrecedent):
+                heapq.heappush(queue, (instantActuel + poids, successeur, chemin, noeudActuel))
 
-    return None                     # Aucun chemin trouvé
+    return None
+
 
 def resoudre_probleme(config: Config, probleme: Probleme):
     """
@@ -656,7 +661,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
                 # Génération d'un nouvel itinéraire
                 if derniersNoeudsMots[mot] != noeudCible and not itinerairesActuels.get(mot, None):
-                    def est_arc_disponible(u, v, t):                # Filtre pour Dijkstra
+                    def est_arc_disponible(u, v, t, pred):                # Filtre pour Dijkstra. Le prédécesseur est utilisé pour vérifier les transitions bloquées
                         # Vérification des blocages du problème
                         for sillon in probleme.blocages:
                             if sillon.est_dans_sillon(u, v, t):
@@ -664,6 +669,11 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         # Vérification des blocages ajoutés par les itinéraires
                         for sillon in blocagesItineraires:
                             if sillon.est_dans_sillon(u, v, t) and sillon.motrice != mot:
+                                return False
+                        # Vérification des transitions bloquées (en fonction des angles de virages)
+                        if pred:
+                            transBloquees = probleme.graphe.nodes[u]['transBloquees']
+                            if sorted([pred, v]) in transBloquees:
                                 return False
                         return True
 
@@ -821,9 +831,9 @@ def main():
 
     # Importation du problème
     graphe = importer_graphe(config.cheminGraphe)
-    motrices = [Motrice(0, 183, retourBase=True), Motrice(1, 261, retourBase=True), Motrice(2, 270, retourBase=True)]
-    lots = [Lot(0, 280, 277, 0, 300), Lot(1, 270, 172, 0, 300), Lot(2, 270, 244, 0, 300)]
-    blocages = [Sillon(11, 117, 0, 1000)]
+    motrices = [Motrice(0, 388, retourBase=True)]
+    lots = [Lot(0, 478, 509, 0, 500)]
+    blocages = [Sillon(47, 46, 0, 1000)]
     probleme = Probleme(graphe, motrices, lots, blocages)
 
     # Résolution du problème
