@@ -26,13 +26,12 @@ class Config:
         self.dossierLogs = 'logs'
         self.fichierLogs = None
         self.nbLogsMax = 10
+        self.cheminGraphe = 'graphe_ferroviaire.graphml'
 
         self.nbGenerations = 100
         self.taillePopulation = 100
         self.cxpb = 0.85
         self.mutpb = 0.15
-
-        self.cheminGraphe = 'graphe_ferroviaire.graphml'
         
         self.ecartementMinimal = 8                      # Ecartement temporel minimal (en min) entre deux trains qui se suivent
         self.dureeAttelage = 10                         # Temps de manoeuvre pour l'attelage
@@ -40,6 +39,7 @@ class Config:
         self.dureeRebroussement = 30                    # Temps supplémentaire ajouté en cas de rebroussement sur un arc
         self.horizonTemp = 800                          # Horizon temporel de la simulation
         self.dureeConservationBlocages = 50             # Nombre d'instants entre deux nettoyages des blocages temporaires
+        self.lambdaTempsAttente = 20.0                   # Facteur d'échelle utilisé pour la distribution exponentielle des temps d'attente
 
         self.coutMax = 10000                            # Coût logistique maximum, appliqué si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
         self.coutFixeParMotrice = 0                     # Coût logistique fixe pour chaque motrice utilisée dans le problème
@@ -175,13 +175,14 @@ class TypeMouvement(Enum):
         return self.__str__()
     
 class Mouvement:
-    def __init__(self, type: TypeMouvement, lot: Lot, etape: int):
+    def __init__(self, type: TypeMouvement, lot: Lot, etape: int, attente: int=0):
         self.type = type
         self.lot = lot
         self.etape = etape
+        self.attente = attente      # Temps d'attente avant le début du mouvement
 
     def __str__(self):
-        return f'({self.type}, {self.lot}, {self.etape})'
+        return f'({self.type}, {self.lot}, {self.etape}, {self.attente})'
     
     def __repr__(self):
         return self.__str__()
@@ -530,7 +531,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
         # Mutation des mouvements (déplacement ou échange)
         elif tirageMut == 1:
-            subTirageMut = random.choice([0, 1])
+            subTirageMut = random.choice([0, 1, 2])
             # Déplacement de mouvements entre deux motrices
             if subTirageMut == 0:
                 # Tirage des motrices
@@ -561,6 +562,14 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 # Déplacement à la nouvelle position
                 ind.mvtsMotrices[mot].remove(mvt)
                 ind.mvtsMotrices[mot].insert(nvIndexMvt, mvt)
+            # Ajout d'une attente aléatoire
+            elif subTirageMut == 2:
+                mot = random.choice(probleme.motrices)
+                if len(ind.mvtsMotrices[mot]) == 0:
+                    return ind,
+                mvt = random.choice(ind.mvtsMotrices[mot])
+                mvt.attente += int(round(np.random.exponential(config.lambdaTempsAttente)))
+                pass
 
         return ind,
 
@@ -717,9 +726,8 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     lotCible = mvtActuel.lot
                     noeudCible = ind.etapesLots[lotCible][mvtActuel.etape]
 
-                # Génération d'un nouvel itinéraire
+                # Si la motrice n'est pas à destination, génération d'un nouvel itinéraire
                 if derniersNoeudsMots[mot] != noeudCible and not itinerairesActuels.get(mot, None):
-                    
                     def est_arc_disponible(u, v, t):                # Filtre pour Dijkstra
                         # Vérification des blocages initiaux du problème
                         for sillon in probleme.blocages.get((u, v), []):
@@ -738,6 +746,10 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     # Si aucun itinéraire n'est disponible, la motrice est en attente à cet instant
                     if not itineraire:
                         continue
+
+                    # S'il y a un temps d'attente attachée à un mouvement: ajout aux attentes de la motrice (avant début de l'itinéraire)
+                    if mvtActuel and mvtActuel.attente > 0:
+                        tempsAttenteMots[mot] += mvtActuel.attente
 
                     # Blocage des arcs de l'itinéraire
                     for i in range(len(itineraire)-1):
