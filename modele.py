@@ -17,6 +17,8 @@ from folium.plugins import TimestampedGeoJson
 from datetime import datetime, timedelta
 from carte import generer_carte
 from collections import defaultdict
+from PIL import Image, ImageDraw
+import io, base64
 
 # ---------------------------------------
 # Définition des classes et des types
@@ -28,7 +30,7 @@ class Config:
         self.nbLogsMax = 10
         self.cheminGraphe = 'graphe_ferroviaire.graphml'
 
-        self.nbGenerations = 100
+        self.nbGenerations = 2
         self.taillePopulation = 100
         self.cxpb = 0.85
         self.mutpb = 0.15
@@ -160,10 +162,6 @@ class Probleme:
             warning(f"L'arc ({cle}) n'existe pas et ne sera pas pris en compte.")
         self.blocages[cle].append(sillon)
 
-# TODO: ajouter les temps d'attente 
-# - Soit comme un délai qui doit être écoulé avant d'initer un mouvement
-# - Soit comme type de mouvement spécifique
-# Donne aux motrices une possibilité de temporisation supplémentaire, mais apporte peu dans les faits.
 class TypeMouvement(Enum):
     Recuperer = 'Réc.'
     Deposer = 'Dép.'
@@ -901,6 +899,24 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 def couleur_aleatoire():
     return "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
+def create_colored_pin(hex_color, size=(50, 100)):
+    """Crée un pin avec contour noir et renvoie un Data URL."""
+    w, h = size
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    draw.polygon([
+        (w/2, h),            
+        (w-6, w-6),          
+        (6, w-6)             
+    ], fill=hex_color, outline="black", width=3)
+
+    # Encodage en base64
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
+
+
 def generer_animation(probleme: Probleme, solution: Solution, config: Config,
                       instantDebut=datetime(2025, 1, 1, 8, 0, 0),
                       pasTemps=timedelta(minutes=1)):
@@ -929,6 +945,13 @@ def generer_animation(probleme: Probleme, solution: Solution, config: Config,
             },
             "properties": {
                 "times": instants,
+                "icon": "marker",
+                "iconstyle": {
+                    "iconUrl": create_colored_pin(couleursMots[mot]),
+                    "iconSize": [25, 41],
+                    "iconAnchor": [12, 41],
+                    "popupAnchor": [1, -34]
+                },
                 "style": {"color": couleursMots[mot]},
                 "popup": str(mot)
             }
@@ -952,11 +975,13 @@ def generer_animation(probleme: Probleme, solution: Solution, config: Config,
             "properties": {
                 "times": instants,
                 "style": {"color": "rgba(0,0,0,0)"},
-                "icon": "circle",          # marqueur visible
+                "icon": "circle",
                 "iconstyle": {
                     "fillColor": 'red',
                     "fillOpacity": 1,
                     "stroke": True,
+                    "color": "black",   # contour noir
+                    "weight": 2,        # épaisseur du contour
                     "radius": 10
                 },
                 "popup": str([str(n) + ' | ' + lib_noeud(probleme.graphe, n) for n in solution.etapesLots[lot]])
@@ -992,21 +1017,15 @@ def main():
     graphe = importer_graphe(config.cheminGraphe)
     
     motrices = [
-        Motrice(0, 690, retourBase=True),
-        Motrice(1, 794, retourBase=True),
-        Motrice(2, 691, retourBase=False)
+        Motrice(0, 705, retourBase=True),
+        Motrice(1, 605, retourBase=True)
         ]
-    
+
     lots = [
-        Lot(0, 738, 794, 0, 200), 
-        Lot(1, 738, 635, 0, 200), 
-        Lot(2, 714, 741, 0, 200), 
-        Lot(3, 711, 720, 0, 200),
-        Lot(4, 692, 735, 0, 200),
-        Lot(5, 764, 740, 0, 200),
-        Lot(6, 648, 790, 0, 200),
-        Lot(7, 633, 591, 0, 200),
-        Lot(8, 771, 772, 0, 200)
+        Lot(0, 658, 794, 0, 200), 
+        Lot(1, 691, 635, 0, 200), 
+        Lot(2, 691, 741, 0, 200), 
+        Lot(3, 661, 720, 0, 200)
         ]
     
      # Construction du problème
