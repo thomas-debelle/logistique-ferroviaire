@@ -673,7 +673,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         # Vérification des transitions bloquées (en fonction des angles de virages)
                         if pred:
                             transBloquees = probleme.graphe.nodes[u]['transBloquees']
-                            if sorted([pred, v]) in transBloquees:
+                            if sorted([pred, v]) in transBloquees:      # Si l'arête est bloquée, elle ne peut pas être empruntée
                                 return False
                         return True
 

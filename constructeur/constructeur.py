@@ -10,6 +10,72 @@ import folium
 from itertools import combinations
 from collections import deque
 
+
+# -------------------------------------
+# Paramètres
+# -------------------------------------
+# Paramètres de données
+cheminFichierLignes = 'constructeur/données/liste-des-lignes.csv'           # Remarque: le fichier des lignes a été consolidé avec des informations provenant de nombreuses sources.
+cheminFichierGares = 'constructeur/données/liste-des-gares.csv'
+cheminFichierTriages = 'constructeur/données/liste-des-triages.csv'
+cheminFichierITE = 'constructeur/données/liste-des-ite.csv'
+cheminFichierChantiers = 'constructeur/données/chantiers-de-transport-combines.csv'
+
+# Paramètres de génération du graphe
+vitesseParDefaut = 160          # Par défaut si la vitesse n'est pas renseignée dans les données.
+vitesseNominaleMax = 220        # Les lignes dont la vitesse nominale max est supérieure à cette valeur sont exclues du graphe.
+rayonRaccordementsStockages = 100       # Rayon de recherche pour raccorder les noeuds de stockage (ITE, Chantiers, etc).
+rayonRaccordementsLignes = 500          # Rayon de recherche pour raccorder les extrémités des lignes. Les angles sont également pris en compte pour le raccordement.
+angleVirageMax = 35             # Angle de virage maximum autorisé. Utilisé comme contrainte pour les raccordements et pour générer les transitions bloquées.
+
+statutsLigneAutorises = ['Exploitée', 'Transférée en voie de service']      # Statut des lignes pouvant être ajoutées au graphe
+exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # Type d'exploitation en voies doubles
+nbCarIndex = 6                  # Nombre de caractères pour formatter l'affichage de l'index des noeuds
+capacitesParType = {            # Capacité par défaut, en nombre d'éléments (wagons + motrices) pour chaque type de noeud
+    'Gare Fret': 50,
+    'Chantier': 300,
+    'ITE': 50,
+    'Triage': 1000
+}           # A l'avenir, permettre à l'utilisateur de configurer noeud par noeud les capacités
+arrondirDurees = True
+
+# -------------------------------------
+# Exemples de cartes
+# -------------------------------------
+# Coordonnées globales
+#lonMin = -90
+#lonMax = 90
+#latMin = -90
+#latMax = 90
+# Coordonnées de la Bretagne
+#lonMin = -4.70
+#lonMax = -1.169
+#latMin = 46.68
+#latMax = 49.00
+#Coordonnées de l'Auvergne-Rhône-Alpes
+lonMin = 2.06  
+lonMax = 7.68 
+latMin = 44.39 
+latMax = 46.78
+# Coordonnées du Berry
+#lonMin = 1.41
+#lonMax = 3.30
+#latMin = 46.56
+#latMax = 47.33
+# Coordonnées de Provence-Alpes-Côte-d'Azur
+#lonMin = 4.25
+#lonMax = 7.68
+#latMin = 43.00
+#latMax = 44.80
+# Coordonnées de Nevers
+#lonMin = 3.08
+#lonMax = 3.25
+#latMin = 46.90
+#latMax = 47.05
+
+
+
+
 # -------------------------------------
 # Fonctions
 # -------------------------------------
@@ -162,91 +228,6 @@ def simplifier_graphe(graphe, iter=100):
 
     return grapheSimplifie
 
-def reconstruire_graphe_direct(graphe):
-    """
-    Construit des transitions directes entre les noeuds non-croisement.
-    """
-    def est_non_croisement(noeud):
-        """Détermine si un nœud est à considérer comme non-croisement."""
-        if graphe.nodes[noeud].get('typeNoeud') != 'Croisement':
-            return True
-        for voisin in graphe.neighbors(noeud):
-            if graphe[noeud][voisin].get('weight', 0) == 0 and graphe.nodes[voisin].get('typeNoeud') != 'Croisement':
-                return True
-        return False
-
-    nonCroisements = [n for n in graphe.nodes if est_non_croisement(n)]
-
-    for noeudDepart in nonCroisements:
-        visites = {noeudDepart}
-        queue = deque([(noeudDepart, 0, [], None)])  # (nœud courant, poids cumulé, arêtes empruntées, nœud précédent)
-
-        while queue:
-            noeudActuel, poidsTotal, aretesParcourues, noeudPred = queue.popleft()
-
-            for voisin in graphe.neighbors(noeudActuel):
-                # Vérifier transition bloquée
-                transBloquees = graphe.nodes[noeudActuel].get('transBloquees', [])
-                if noeudPred is not None and tuple(sorted([noeudPred, voisin])) in transBloquees:
-                    continue  # On ignore cette transition
-
-                if voisin in visites:
-                    continue
-                visites.add(voisin)
-
-                nouvPoids = poidsTotal + graphe[noeudActuel][voisin]['weight']
-                nouvAretesParcourues = aretesParcourues + [(noeudActuel, voisin)]
-
-                if est_non_croisement(voisin) and voisin != noeudDepart:
-                    valExploit = (
-                        "Double"
-                        if all(graphe[u][v]['exploit'] == 'Double' for u, v in nouvAretesParcourues)
-                        else "Simple"
-                    )
-                    if not graphe.has_edge(noeudDepart, voisin):
-                        graphe.add_edge(noeudDepart, voisin, weight=nouvPoids, exploit=valExploit)
-                elif graphe.nodes[voisin].get('typeNoeud') == 'Croisement':
-                    queue.append((voisin, nouvPoids, nouvAretesParcourues, noeudActuel))
-    return graphe
-
-
-def supprimer_noeuds_croisement(graphe):
-    """
-    Supprime tous les noeuds de croisement du graphe. Réalise d'abord des simplifications en éliminant les arêtes de poids nul.
-    """
-    # On copie la liste des arêtes pour éviter de la modifier pendant l'itération
-    aretes = list(graphe.edges(data=True))
-    
-    for u, v, data in aretes:
-        # Vérifie si l'arête a un poids nul
-        if data.get('weight', None) == 0:
-            typeU = graphe.nodes[u].get('typeNoeud')
-            typeV = graphe.nodes[v].get('typeNoeud')
-            
-            # Vérifie si exactement un des deux est un 'Croisement'
-            if (typeU == 'Croisement') ^ (typeV == 'Croisement'):
-                croisementNoeud = u if typeU == 'Croisement' else v
-                autreNoeud = v if croisementNoeud == u else u
-                
-                # Relie l'autre noeud à tous les voisins du croisement
-                for voisin in list(graphe.neighbors(croisementNoeud)):
-                    if voisin != autreNoeud:
-                        # Récupère les attributs de l'arête croisement-voisin
-                        attrVoisin = graphe[croisementNoeud][voisin]
-                        poids = attrVoisin.get('weight', 1)
-                        exploit = attrVoisin.get('exploit', None)
-                        
-                        # Ajoute ou met à jour l'arête autre_node-voisin
-                        graphe.add_edge(autreNoeud, voisin, weight=poids, exploit=exploit)
-
-    # Suppression finale des nœuds de type "Croisement"
-    croisements = [n for n, d in graphe.nodes(data=True) if d.get('typeNoeud') == 'Croisement']
-    graphe.remove_nodes_from(croisements)
-
-    return graphe
-
-
-
 def extraire_composante_principale(graphe):
     composantes = list(nx.connected_components(graphe))     
     principale = max(composantes, key=len)                  # Cherche la plus grande composante connexe
@@ -297,74 +278,6 @@ def rendre_graphe_immuable(graphe):
         transitionsImmuables = json.dumps(graphe.nodes[noeud]['transBloquees'])
         graphe.nodes[noeud]['transBloquees'] = transitionsImmuables
     return graphe
-
-
-# -------------------------------------
-# Paramètres
-# -------------------------------------
-# Paramètres de données
-cheminFichierLignes = 'constructeur/données/liste-des-lignes.csv'           # Remarque: le fichier des lignes a été consolidé avec des informations provenant de nombreuses sources.
-cheminFichierGares = 'constructeur/données/liste-des-gares.csv'
-cheminFichierTriages = 'constructeur/données/liste-des-triages.csv'
-cheminFichierITE = 'constructeur/données/liste-des-ite.csv'
-cheminFichierChantiers = 'constructeur/données/chantiers-de-transport-combines.csv'
-
-# Paramètres de génération du graphe
-vitesseParDefaut = 160          # Par défaut si la vitesse n'est pas renseignée dans les données.
-vitesseNominaleMax = 220        # Les lignes dont la vitesse nominale max est supérieure à cette valeur sont exclues du graphe.
-rayonRaccordementsStockages = 500       # Rayon de recherche pour raccorder les noeuds de stockage (ITE, Chantiers, etc).
-rayonRaccordementsLignes = 500          # Rayon de recherche pour raccorder les extrémités des lignes.
-angleVirageMax = 35             # Angle de virage maximum autorisé. Utilisé comme contrainte pour les raccordements et pour générer les transitions bloquées.
-
-statutsLigneAutorises = ['Exploitée', 'Transférée en voie de service']      # Statut des lignes pouvant être ajoutées au graphe
-exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # Type d'exploitation en voies doubles
-nbCarIndex = 6                  # Nombre de caractères pour formatter l'affichage de l'index des noeuds
-capacitesParType = {            # Capacité par défaut, en nombre d'éléments (wagons + motrices) pour chaque type de noeud
-    'Gare Fret': 50,
-    'Chantier': 300,
-    'ITE': 50,
-    'Triage': 1000
-}           # A l'avenir, permettre à l'utilisateur de configurer noeud par noeud les capacités
-arrondirDurees = True
-
-# -------------------------------------
-# Exemples de cartes
-# -------------------------------------
-# Coordonnées globales
-#lonMin = -90
-#lonMax = 90
-#latMin = -90
-#latMax = 90
-# Coordonnées de la Bretagne
-lonMin = -4.70
-lonMax = -1.169
-latMin = 46.68
-latMax = 49.00
-#Coordonnées de l'Auvergne-Rhône-Alpes
-#lonMin = 2.06  
-#lonMax = 7.68 
-#latMin = 44.39 
-#latMax = 46.78
-# Coordonnées du Berry
-#lonMin = 1.41
-#lonMax = 3.30
-#latMin = 46.56
-#latMax = 47.33
-# Coordonnées de Provence-Alpes-Côte-d'Azur
-#lonMin = 4.25
-#lonMax = 7.68
-#latMin = 43.00
-#latMax = 44.80
-# Coordonnées de Nevers
-#lonMin = 3.08
-#lonMax = 3.25
-#latMin = 46.90
-#latMax = 47.05
-
-
-
-
-
 
 
 
@@ -510,26 +423,20 @@ for segment in segments:
             graphe.add_edge(extremite, noeudProche, weight=0, exploit='Double')       # Le raccordement étant théorique, on considère qu'il est de poids nul et à double sens.
 
 
-# Raccordement des autres noeuds (automatiquement raccordés à tous les noeuds proches)
-for noeud in graphe.nodes:
+# Raccordement des noeuds de stockage à tous les noeuds dans le rayon
+for noeud in list(graphe.nodes):
     typeNoeud = graphe.nodes[noeud].get("typeNoeud")
     if typeNoeud != 'Croisement':
         if not est_dans_zone(noeud, latMin, latMax, lonMin, lonMax):
             continue
 
-        noeudProche = 1     # Valeur de base pour rentrer dans la boucle
-        while noeudProche:      # Raccordement à tous les noeuds proches qui ne sont pas accessibles
-            noeudProche, dist = trouver_noeud_proche(
-                graphe,
-                arbreKd,
-                noeud,
-                rayonRaccordementsStockages,
-                noeudsXY,
-                correspondanceXYNoeud,
-                eviterNoeudsAccessible=True
-            )
-            if noeudProche:
-                graphe.add_edge(noeud, noeudProche, weight=0, exploit='Double')           # Poids nul car on suppose un raccordement direct
+        x, y = convertir_latlon_xy(noeud[0], noeud[1])
+        indices = arbreKd.query_ball_point([x, y], r=rayonRaccordementsStockages)     # Indices des candidats
+        for idx in indices:
+            candidatXY = noeudsXY[idx]
+            candidat = correspondanceXYNoeud[candidatXY]
+            graphe.add_edge(noeud, candidat, weight=0, exploit='Double')           # Poids nul car on suppose un raccordement direct
+
 
 # Construction des transitions bloquées (en fonction des angles d'arrivée et de départ des trains)
 for noeud in graphe.nodes:
@@ -541,10 +448,12 @@ for noeud in graphe.nodes:
     for paireVoisins in list(combinations(voisins, 2)):
         voisin1 = paireVoisins[0]
         voisin2 = paireVoisins[1]
+        poidsVoisin1 = graphe.edges[(paireVoisins[0], noeud)]['weight']
+        poidsVoisin2 = graphe.edges[(paireVoisins[1], noeud)]['weight']
         angleVirage = 180 - calculer_angle(noeud[0], noeud[1], voisin1[0], voisin1[1], voisin2[0], voisin2[1])      # Calcul l'angle de virage entre les deux noeuds
         if (angleVirage > angleVirageMax
-            and graphe.edges[(paireVoisins[0], noeud)]['weight'] > 0 
-            and graphe.edges[(paireVoisins[1], noeud)]['weight'] > 0):              # Si l'un des poids est nul, le noeud a été raccordé lors du retraitement, et la transition ne doit pas être sanctionnée
+            and (poidsVoisin1 > 0 or (poidsVoisin1 == 0 and graphe.nodes[voisin1]['typeNoeud'] == 'Croisement'))
+            and (poidsVoisin2 > 0 or (poidsVoisin2 == 0 and graphe.nodes[voisin2]['typeNoeud'] == 'Croisement'))):    # Les noeuds de stockages raccordés ne peuvent pas être sanctionnés, car les angles ne sont pas pris en compte lors du raccordement.
             graphe.nodes[noeud]['transBloquees'].append(paireVoisins)               # Blocage des virages avec des angles trop élevés
 
 
@@ -552,9 +461,7 @@ for noeud in graphe.nodes:
 # Application des opérations sur le graphe
 # ------------------------------------------
 graphe = simplifier_graphe(graphe)
-#graphe = extraire_composante_principale(graphe)
-#graphe = reconstruire_graphe_direct(graphe)
-#graphe = supprimer_noeuds_croisement(graphe)
+graphe = extraire_composante_principale(graphe)
 graphe = reindexer_graphe(graphe)
 graphe = rendre_graphe_immuable(graphe)     # Rend le graphe immuable (en convertissant les listes et tuples en chaînes de caractères avec json.dumps)
 
