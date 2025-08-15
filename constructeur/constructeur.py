@@ -8,6 +8,7 @@ import numpy as np
 import sys
 import folium
 from itertools import combinations
+from collections import deque
 
 # -------------------------------------
 # Fonctions
@@ -70,44 +71,54 @@ def longueur_chemin_graphe_safe(graphe, source, target):
     except nx.NetworkXNoPath as e:
         return sys.maxsize          # Retourne une très grande valeur
     
-def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, noeudsXY, correspondanceXYNoeud, eviterNoeudsAccessible=False, typeNoeud=None, limiteAccessibilite=20):
+def trouver_noeud_proche(graphe, arbreKd, noeud, rayon, noeudsXY, correspondanceXYNoeud, eviterNoeudsAccessible=False, typeNoeud=None, limiteAccessibilite=20, angleMax=None, noeudAdjacent=None):
     x, y = convertir_latlon_xy(noeud[0], noeud[1])
-    indices = arbreKd.query_ball_point([x, y], r=rayon)
+    indices = arbreKd.query_ball_point([x, y], r=rayon)     # Indices des candidats
 
     noeudPlusProche = None
     distanceMinimale = float('inf')
     for idx in indices:
-        voisinXY = noeudsXY[idx]
-        voisin = correspondanceXYNoeud[voisinXY]
-        if voisin == noeud:
+        candidatXY = noeudsXY[idx]
+        candidat = correspondanceXYNoeud[candidatXY]
+        if candidat == noeud:
             continue
-        if eviterNoeudsAccessible and (graphe.has_edge(noeud, voisin) or voisin == noeud or longueur_chemin_graphe_safe(graphe, noeud, voisin) < limiteAccessibilite):
+        if eviterNoeudsAccessible and (graphe.has_edge(noeud, candidat) or candidat == noeud or longueur_chemin_graphe_safe(graphe, noeud, candidat) < limiteAccessibilite):
             continue            # Si un arête est déjà présente, le voisin est le noeud, ou le voisin est déjà accessible en un nombre d'arêtes limité, alors le voisin n'est pas éligible au raccordement. 
-        if (not typeNoeud is None) and graphe.nodes[voisin].get("typeNoeud") != typeNoeud:
+        if (not typeNoeud is None) and graphe.nodes[candidat].get("typeNoeud") != typeNoeud:
             continue            # Si le noeud n'est pas du type passé en argument, alors il ne peut pas être retourné
-        dist = geodesic(noeud, voisin).meters
+        if angleMax is not None and noeudAdjacent is not None:
+            angle = 180 - calculer_angle(
+                noeud[0], noeud[1],
+                noeudAdjacent[0], noeudAdjacent[1],
+                candidat[0], candidat[1]
+            )
+            if angle > angleMax:
+                continue
+
+        dist = geodesic(noeud, candidat).meters
         if dist < distanceMinimale:
-            noeudPlusProche = voisin
+            noeudPlusProche = candidat
             distanceMinimale = dist
     return noeudPlusProche, distanceMinimale
+
 
 def est_dans_zone(point, latMin, latMax, lonMin, lonMax):
     lat, lon = point
     return latMin <= lat <= latMax and lonMin <= lon <= lonMax
 
-def simplifier_graphe(g, iter=100):
+def simplifier_graphe(graphe, iter=100):
     # Fonction pour mise à jour des transitions bloquées
     def maj_transitions(graphe, noeudCible, ancienVoisin, nouveauVoisin):
         transBloquees = graphe.nodes[noeudCible]['transBloquees']        # Parcoure les transitions bloquées du premier voisin
         for i, (n1, n2) in enumerate(transBloquees):
             if n1 == ancienVoisin:
-                transBloquees[i] = (nouveauVoisin, n2)
+                transBloquees[i] = tuple(sorted([nouveauVoisin, n2]))
             elif n2 == ancienVoisin:
-                transBloquees[i] = (n1, nouveauVoisin)       # Nouveau noeud source de la transition
+                transBloquees[i] = tuple(sorted([n1, nouveauVoisin]))       # Nouveau noeud source de la transition
 
 
     # Processus principal
-    grapheSimplifie = g.copy()
+    grapheSimplifie = graphe.copy()
     for _ in range(iter):       # Simplification en plusieurs itérations
         noeudsASupprimer = []
         for noeud in list(grapheSimplifie.nodes):
@@ -150,6 +161,91 @@ def simplifier_graphe(g, iter=100):
             transBloquees.remove(t)
 
     return grapheSimplifie
+
+def reconstruire_graphe_direct(graphe):
+    """
+    Construit des transitions directes entre les noeuds non-croisement.
+    """
+    def est_non_croisement(noeud):
+        """Détermine si un nœud est à considérer comme non-croisement."""
+        if graphe.nodes[noeud].get('typeNoeud') != 'Croisement':
+            return True
+        for voisin in graphe.neighbors(noeud):
+            if graphe[noeud][voisin].get('weight', 0) == 0 and graphe.nodes[voisin].get('typeNoeud') != 'Croisement':
+                return True
+        return False
+
+    nonCroisements = [n for n in graphe.nodes if est_non_croisement(n)]
+
+    for noeudDepart in nonCroisements:
+        visites = {noeudDepart}
+        queue = deque([(noeudDepart, 0, [], None)])  # (nœud courant, poids cumulé, arêtes empruntées, nœud précédent)
+
+        while queue:
+            noeudActuel, poidsTotal, aretesParcourues, noeudPred = queue.popleft()
+
+            for voisin in graphe.neighbors(noeudActuel):
+                # Vérifier transition bloquée
+                transBloquees = graphe.nodes[noeudActuel].get('transBloquees', [])
+                if noeudPred is not None and tuple(sorted([noeudPred, voisin])) in transBloquees:
+                    continue  # On ignore cette transition
+
+                if voisin in visites:
+                    continue
+                visites.add(voisin)
+
+                nouvPoids = poidsTotal + graphe[noeudActuel][voisin]['weight']
+                nouvAretesParcourues = aretesParcourues + [(noeudActuel, voisin)]
+
+                if est_non_croisement(voisin) and voisin != noeudDepart:
+                    valExploit = (
+                        "Double"
+                        if all(graphe[u][v]['exploit'] == 'Double' for u, v in nouvAretesParcourues)
+                        else "Simple"
+                    )
+                    if not graphe.has_edge(noeudDepart, voisin):
+                        graphe.add_edge(noeudDepart, voisin, weight=nouvPoids, exploit=valExploit)
+                elif graphe.nodes[voisin].get('typeNoeud') == 'Croisement':
+                    queue.append((voisin, nouvPoids, nouvAretesParcourues, noeudActuel))
+    return graphe
+
+
+def supprimer_noeuds_croisement(graphe):
+    """
+    Supprime tous les noeuds de croisement du graphe. Réalise d'abord des simplifications en éliminant les arêtes de poids nul.
+    """
+    # On copie la liste des arêtes pour éviter de la modifier pendant l'itération
+    aretes = list(graphe.edges(data=True))
+    
+    for u, v, data in aretes:
+        # Vérifie si l'arête a un poids nul
+        if data.get('weight', None) == 0:
+            typeU = graphe.nodes[u].get('typeNoeud')
+            typeV = graphe.nodes[v].get('typeNoeud')
+            
+            # Vérifie si exactement un des deux est un 'Croisement'
+            if (typeU == 'Croisement') ^ (typeV == 'Croisement'):
+                croisementNoeud = u if typeU == 'Croisement' else v
+                autreNoeud = v if croisementNoeud == u else u
+                
+                # Relie l'autre noeud à tous les voisins du croisement
+                for voisin in list(graphe.neighbors(croisementNoeud)):
+                    if voisin != autreNoeud:
+                        # Récupère les attributs de l'arête croisement-voisin
+                        attrVoisin = graphe[croisementNoeud][voisin]
+                        poids = attrVoisin.get('weight', 1)
+                        exploit = attrVoisin.get('exploit', None)
+                        
+                        # Ajoute ou met à jour l'arête autre_node-voisin
+                        graphe.add_edge(autreNoeud, voisin, weight=poids, exploit=exploit)
+
+    # Suppression finale des nœuds de type "Croisement"
+    croisements = [n for n, d in graphe.nodes(data=True) if d.get('typeNoeud') == 'Croisement']
+    graphe.remove_nodes_from(croisements)
+
+    return graphe
+
+
 
 def extraire_composante_principale(graphe):
     composantes = list(nx.connected_components(graphe))     
@@ -216,8 +312,9 @@ cheminFichierChantiers = 'constructeur/données/chantiers-de-transport-combines.
 # Paramètres de génération du graphe
 vitesseParDefaut = 160          # Par défaut si la vitesse n'est pas renseignée dans les données.
 vitesseNominaleMax = 220        # Les lignes dont la vitesse nominale max est supérieure à cette valeur sont exclues du graphe.
-rayonRaccordements = 400        # Rayon de recherche pour raccorder les extrémités des lignes.
-angleVirageMax = 35             # Angle de virage à partir duquel une transition n'est plus autorisée à une intersection (l'angle ne correspond pas nécessairement à une spécification technique).
+rayonRaccordementsStockages = 500       # Rayon de recherche pour raccorder les noeuds de stockage (ITE, Chantiers, etc).
+rayonRaccordementsLignes = 500          # Rayon de recherche pour raccorder les extrémités des lignes.
+angleVirageMax = 35             # Angle de virage maximum autorisé. Utilisé comme contrainte pour les raccordements et pour générer les transitions bloquées.
 
 statutsLigneAutorises = ['Exploitée', 'Transférée en voie de service']      # Statut des lignes pouvant être ajoutées au graphe
 exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # Type d'exploitation en voies doubles
@@ -239,15 +336,15 @@ arrondirDurees = True
 #latMin = -90
 #latMax = 90
 # Coordonnées de la Bretagne
-#lonMin = -4.70
-#lonMax = -1.169
-#latMin = 46.68
-#latMax = 49.00
+lonMin = -4.70
+lonMax = -1.169
+latMin = 46.68
+latMax = 49.00
 #Coordonnées de l'Auvergne-Rhône-Alpes
-lonMin = 2.06  
-lonMax = 7.68 
-latMin = 44.39 
-latMax = 46.78
+#lonMin = 2.06  
+#lonMax = 7.68 
+#latMin = 44.39 
+#latMax = 46.78
 # Coordonnées du Berry
 #lonMin = 1.41
 #lonMax = 3.30
@@ -258,11 +355,14 @@ latMax = 46.78
 #lonMax = 7.68
 #latMin = 43.00
 #latMax = 44.80
-# Coordonnées de Haute Normandie
-#lonMin = 0.10   # Longitude minimale (ouest)
-#lonMax = 1.75   # Longitude maximale (est)
-#latMin = 48.70  # Latitude minimale (sud)
-#latMax = 49.90  # Latitude maximale (nord)
+# Coordonnées de Nevers
+#lonMin = 3.08
+#lonMax = 3.25
+#latMin = 46.90
+#latMax = 47.05
+
+
+
 
 
 
@@ -377,26 +477,40 @@ for noeud in graphe.nodes:
 
 arbreKd = KDTree(noeudsXY)
 
+
 # Raccordement des extrémités de lignes
 for segment in segments:
     if len(segment) < 2:
         continue
+
     for extremite in [segment[0], segment[-1]]:
         if not graphe.has_node(extremite) or len(list(graphe.neighbors(extremite))) > 1:
-            continue            # L'extrémité n'est pas traitée si un raccordement a déjà été effectué ou si elle n'est pas dans la zone configurée
+            continue  # L'extrémité n'est pas traitée si un raccordement a déjà été effectué ou si elle n'est pas dans la zone configurée
+
+        # Récupération du point adjacent à l'extrémité pour calculer la direction de la ligne
+        if extremite == segment[0]:
+            noeudAdjacent = segment[1]
+        else:
+            noeudAdjacent = segment[-2]
+
         noeudProche, dist = trouver_noeud_proche(
             graphe, 
             arbreKd, 
             extremite, 
-            rayonRaccordements, 
+            rayonRaccordementsLignes, 
             noeudsXY, 
             correspondanceXYNoeud, 
             eviterNoeudsAccessible=True, 
-            typeNoeud='Croisement')          # On ne relie pas les extrémités à des ITE ou des triages, car la ligne pourrait alors ne pas être raccordée correctement
+            typeNoeud='Croisement',      # On ne relie pas les extrémités à des ITE ou des triages, car la ligne pourrait alors ne pas être raccordée correctement
+            angleMax=angleVirageMax,
+            noeudAdjacent=noeudAdjacent
+        )
+
         if noeudProche:
             graphe.add_edge(extremite, noeudProche, weight=0, exploit='Double')       # Le raccordement étant théorique, on considère qu'il est de poids nul et à double sens.
 
-# Raccordement des autres noeuds
+
+# Raccordement des autres noeuds (automatiquement raccordés à tous les noeuds proches)
 for noeud in graphe.nodes:
     typeNoeud = graphe.nodes[noeud].get("typeNoeud")
     if typeNoeud != 'Croisement':
@@ -409,7 +523,7 @@ for noeud in graphe.nodes:
                 graphe,
                 arbreKd,
                 noeud,
-                rayonRaccordements,
+                rayonRaccordementsStockages,
                 noeudsXY,
                 correspondanceXYNoeud,
                 eviterNoeudsAccessible=True
@@ -434,9 +548,13 @@ for noeud in graphe.nodes:
             graphe.nodes[noeud]['transBloquees'].append(paireVoisins)               # Blocage des virages avec des angles trop élevés
 
 
-# Application des simplifications
+# ------------------------------------------
+# Application des opérations sur le graphe
+# ------------------------------------------
 graphe = simplifier_graphe(graphe)
-graphe = extraire_composante_principale(graphe)
+#graphe = extraire_composante_principale(graphe)
+#graphe = reconstruire_graphe_direct(graphe)
+#graphe = supprimer_noeuds_croisement(graphe)
 graphe = reindexer_graphe(graphe)
 graphe = rendre_graphe_immuable(graphe)     # Rend le graphe immuable (en convertissant les listes et tuples en chaînes de caractères avec json.dumps)
 
@@ -510,8 +628,11 @@ for noeud, data in graphe.nodes(data=True):
         fill_opacity=0.8,
         tooltip=(str(f'<b>[{idnStr}]</b> ' 
                      + typeNoeud + ' - ' + (data.get("libelle", "")) if typeNoeud != 'Croisement' else f'[{idnStr}] Noeud') 
-                     + '<br><b>Transitions bloquées</b> : ' + str(transBloquees) if len(transBloquees) > 0 else ''
-                     + '<br><b>Capacité</b> : ' + str(capacite))
+                     + '<br><b>Transitions bloquées</b> : ' + (str(transBloquees) if len(transBloquees) > 0 else '')
+                     + '<br><b>Capacité</b> : ' + str(capacite)
+                     + '<br><b>Nb. de voisins</b> : ' + str(len(list(graphe.neighbors(noeud))))
+                     + '<br><b>Lat.</b> : ' + str(graphe.nodes[noeud]['lat'])
+                     + '<br><b>Lon.</b> : ' + str(graphe.nodes[noeud]['lon']))
     )
 
     # Ajout du marqueur au bon groupe
