@@ -30,10 +30,10 @@ class Config:
         self.nbLogsMax = 10
         self.cheminGraphe = 'graphe_ferroviaire.graphml'
 
-        self.nbGenerations = 2
+        self.nbGenerations = 50
         self.taillePopulation = 100
         self.cxpb = 0.85
-        self.mutpb = 0.15
+        self.mutpb = 0.25
         
         self.ecartementMinimal = 8                      # Ecartement temporel minimal (en min) entre deux trains qui se suivent
         self.dureeAttelage = 10                         # Temps de manoeuvre pour l'attelage
@@ -42,6 +42,7 @@ class Config:
         self.horizonTemp = 800                          # Horizon temporel de la simulation
         self.dureeConservationBlocages = 50             # Nombre d'instants entre deux nettoyages des blocages temporaires
         self.lambdaTempsAttente = 20.0                   # Facteur d'échelle utilisé pour la distribution exponentielle des temps d'attente
+        self.orienterAjoutEtape = False                  # Si activé, une heuristique est utilisée pour orienter l'ajout d'étapes (recherche sur le plus court chemins entre les étapes précédentes et suivantes)
 
         self.coutMax = 10000                            # Coût logistique maximum, appliqué si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
         self.coutFixeParMotrice = 0                     # Coût logistique fixe pour chaque motrice utilisée dans le problème
@@ -510,14 +511,19 @@ def resoudre_probleme(config: Config, probleme: Probleme):
     
     def muter_individu(ind: Individu):
         tirageMut = random.choice([0, 1])
-        # Mutation des étapes (ajout ou suppression)
+        # Mutation des étapes (ajout, suppression, ou régénération)
         if tirageMut == 0:
             lot = random.choice(probleme.lots)
             subTirageMut = random.choice([0, 1, 2]) if len(ind.etapesLots[lot]) > 2 else 0         # Pas de suppression ou variation si seulement origine et dest
             # Ajout d'une étape
             if subTirageMut == 0:
                 numEtape = random.randint(1, len(ind.etapesLots[lot]) - 1)      # Sélection d'un étape entre les étapes origine (exclue) et dest (inclue)
-                noeudEtape = random.choice(noeudsCapa)      # Sélection d'un noeud de capacité non nulle
+                if config.orienterAjoutEtape:
+                    noeudsEligibles = list(set(noeudsCapa) & set(nx.shortest_path(probleme.graphe, ind.etapesLots[lot][numEtape-1], ind.etapesLots[lot][numEtape])))    # Intersection des noeuds de capacité non nulle ET sur le plus cours chemin (guidage par une heuristique)
+                    noeudsEligibles = noeudsEligibles + random.sample(noeudsCapa, len(noeudsEligibles))    # Ajout d'autres noeuds aléatoires dans les noeuds éligibles
+                    noeudEtape = random.choice(noeudsEligibles)                     # Tirage de l'étape
+                else:
+                    noeudEtape = random.choice(noeudsCapa)
                 ind.inserer_etape(lot, numEtape, noeudEtape, random.choice(probleme.motrices))
             # Suppression d'un étape
             elif subTirageMut == 1:  # Suppression uniquement si d'autres étapes que origine et dest
@@ -567,7 +573,6 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     return ind,
                 mvt = random.choice(ind.mvtsMotrices[mot])
                 mvt.attente += int(round(np.random.exponential(config.lambdaTempsAttente)))
-                pass
 
         return ind,
 
@@ -718,7 +723,8 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         noeudCible = mot.noeudOrigine
                         mvtActuel = None                # Le retour à la base est un déplacement spécial en dehors des mouvements de l'individu
                     else:
-                        continue
+                        continue        # Plus de traitement pour la motrice
+
                 else:
                     mvtActuel = ind.mvtsMotrices[mot][indicesMvtsActuels[mot]]
                     lotCible = mvtActuel.lot
@@ -1022,18 +1028,18 @@ def main():
         ]
 
     lots = [
-        Lot(0, 658, 794, 0, 200), 
-        Lot(1, 691, 635, 0, 200), 
-        Lot(2, 691, 741, 0, 200), 
-        Lot(3, 661, 720, 0, 200)
+        Lot(0, 658, 794, 0, 1), 
+        Lot(1, 691, 635, 0, 1), 
+        Lot(2, 691, 741, 0, 1), 
+        Lot(3, 661, 720, 0, 1)
         ]
     
      # Construction du problème
     probleme = Probleme(graphe, motrices, lots)
 
     # Ajout des blocages
-    #probleme.ajouter_blocage(Sillon(400, 132, 0, 1000))
-    #probleme.ajouter_blocage(Sillon(132, 400, 0, 1000))
+    # probleme.ajouter_blocage(Sillon(400, 132, 0, 1000, probleme.motrices[1]))
+    # probleme.ajouter_blocage(Sillon(132, 400, 0, 1000, probleme.motrices[1]))
 
     # Résolution du problème
     sol = resoudre_probleme(config, probleme)
