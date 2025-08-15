@@ -36,6 +36,7 @@ class Config:
         self.ecartementMinimal = 8                      # Ecartement minimal (en min) entre deux trains qui se suivent
         self.dureeAttelage = 10                         # Temps de manoeuvre pour l'attelage
         self.dureeDesattelage = 5                       # Temps de manoeuvre pour le désattelage
+        self.dureeRebroussement = 30
         self.horizonTemp = 600                          # Horizon temporel de la simulation
 
         self.coutMax = 10000                            # Coût logistique maximum, appliqué si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
@@ -138,12 +139,12 @@ class Probleme:
             if not mot.index in indexMotrices:
                 indexMotrices.add(mot.index)
             else:
-                error(f"Index en double dans les motrices: {mot.index}")
+                raise Exception(f"Index en double dans les motrices: {mot.index}")
         for lot in self.lots:
             if not lot.index in indexLots:
                 indexLots.add(lot.index)
             else:
-                error(f"Index en double dans les lots: {lot.index}")
+                raise Exception(f"Index en double dans les lots: {lot.index}")
         for b in self.blocages:
             if not (b.noeudDebut, b.noeudFin) in self.graphe.edges:
                 warning(f"L'arc ({b.noeudDebut}, {b.noeudFin}) n'existe pas et ne sera pas pris en compte.")
@@ -247,7 +248,7 @@ def importer_graphe(cheminGraphe):
     for noeud in grapheOriginal.nodes:
         noeudConverti = int(noeud)
         grapheConverti.add_node(noeudConverti, **grapheOriginal.nodes[noeud])
-        grapheConverti.nodes[noeudConverti]['transBloquees'] = json.loads(grapheConverti.nodes[noeudConverti]['transBloquees'])       # Extraction des transitions bloquées
+        grapheConverti.nodes[noeudConverti]['transRebroussement'] = json.loads(grapheConverti.nodes[noeudConverti]['transRebroussement'])       # Extraction des transitions bloquées
 
     # Copie des arêtes avec conversion des extrémités
     for u, v, data in grapheOriginal.edges(data=True):
@@ -255,15 +256,34 @@ def importer_graphe(cheminGraphe):
 
     return grapheConverti
 
-def lib_noeud(probleme, noeud: int):
+def lib_noeud(graphe, noeud: int):
     """
-    Extrait le libellé du noeud. Principalement utilisée pour le déboguage.
+    Extrait le libellé du noeud. Utile pour le déboguage.
     """
-    data = probleme.graphe.nodes.get(noeud, None)
+    data = graphe.nodes.get(noeud, None)
     if data:
         return data.get('libelle', '')
     else:
         return ''
+    
+def coords_noeud(graphe, noeud: int):
+    data = graphe.nodes.get(noeud, None)
+    if data:
+        return (float(data['lat']), float(data['lon']))
+    else:
+        return (None, None)
+    
+def traduire_itineraire(graphe, itineraire: list):
+    """
+    itineraire: Liste de couples, où le premier élément est un noeud, et le second élément est une durée de parcours depuis le départ.
+    """
+    if itineraire is None:
+        return None
+    
+    traduction = []
+    for couple in itineraire:
+        traduction.append(((str(couple[0]).ljust(6) + ' | ' + lib_noeud(graphe, couple[0])).ljust(40), couple[1]))
+    return traduction
         
 
 def extraire_noeud(graphe: nx.Graph, index: int):
@@ -272,33 +292,42 @@ def extraire_noeud(graphe: nx.Graph, index: int):
     """
     return next((n for n, d in graphe.nodes(data=True) if d.get('index', 0) == index), None)
 
-def dijkstra_temporel(graphe, origine, dest, instant=0, filtre=None):
+def dijkstra_special(graphe, origine, dest, instant=0, filtre=None, dureeRebroussement=0):
     """
-    Variante de Dijkstra permettant de filtrer les arcs en fonction de l'instant
-    et du dernier nœud visité.
-    - filtre(u, v, t, prev) -> True si l'arc (u, v) est disponible à l'instant t,
-      sachant que prev est le nœud précédent avant u (ou None pour le départ).
+    Variante de Dijkstra permettant de filtrer les arcs en fonction de l'instant.
+    Détecte et pénalise également les rebroussements.
+    Retourne un chemin et la liste des rebroussements.
     """
-    queue = [(instant, origine, [], None)]  # (tempsCumul, noeudActuel, chemin, noeudPrecedent)
+    queue = [(instant, origine, [], [], None)]  # (tempsCumul, noeudActuel, chemin, noeudPrecedent)
     visites = {}
 
     while queue:
-        instantActuel, noeudActuel, chemin, noeudPrecedent = heapq.heappop(queue)
+        instantActuel, noeudActuel, chemin, rebroussements, noeudPrecedent = heapq.heappop(queue)
 
         if (noeudActuel in visites) and (instantActuel >= visites[noeudActuel]):
             continue
+            
         visites[noeudActuel] = instantActuel
         chemin = chemin + [(noeudActuel, instantActuel)]
 
         if noeudActuel == dest:
-            return chemin
+            return chemin, rebroussements
 
         for successeur in graphe[noeudActuel]:      # Parcours des successeurs
             poids = graphe[noeudActuel][successeur]['weight']
-            if filtre is None or filtre(noeudActuel, successeur, instantActuel, noeudPrecedent):
-                heapq.heappush(queue, (instantActuel + poids, successeur, chemin, noeudActuel))
+            if filtre is None or filtre(noeudActuel, successeur, instantActuel):
+                nouveauxRebroussements = rebroussements     # Par défaut, pas de copie
 
-    return None
+                # Vérification des transitions de rebroussement (en fonction des angles de virages)
+                if noeudPrecedent and sorted([noeudPrecedent, successeur]) in graphe.nodes[noeudActuel]['transRebroussement']:
+                    dureeParcours = poids + dureeRebroussement
+                    nouveauxRebroussements = rebroussements + [(noeudActuel, instantActuel)]        # Copie et création d'une nouvelle liste
+                else:
+                    dureeParcours = poids
+                heapq.heappush(queue, (instantActuel + dureeParcours, successeur, chemin, nouveauxRebroussements, noeudActuel))     # Le noeud peut être emprunté, et est ajouté à la pile
+
+    return None, None
+    
 
 
 def resoudre_probleme(config: Config, probleme: Probleme):
@@ -623,6 +652,17 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         # -------------------------------------------------
         objCoutsLogistiques += len(probleme.motrices) * config.coutFixeParMotrice       # Application des coûts fixes
         for t in range(config.horizonTemp):
+            # Nettoyage des blocages d'itinéraires
+            posBlocagesASuppr = []
+            if t % 50 == 0:
+                for i, b in enumerate(blocagesItineraires):
+                    if b.tempsFin < t:
+                        posBlocagesASuppr.append(i)
+                cmptSuppr = 0
+                for i in posBlocagesASuppr:
+                    blocagesItineraires.pop(i - cmptSuppr)
+                    cmptSuppr += 1
+
             # Initialisation de l'occupation
             occupationNoeuds = {}                                       # Nombre d'éléments occupant chaque noeud du réseau
             def ajouter_occupation(noeud, occ):
@@ -661,8 +701,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
                 # Génération d'un nouvel itinéraire
                 if derniersNoeudsMots[mot] != noeudCible and not itinerairesActuels.get(mot, None):
-                    def est_arc_disponible(u, v, t, pred):                # Filtre pour Dijkstra. Le prédécesseur est utilisé pour vérifier les transitions bloquées
-                        # Vérification des blocages du problème
+                    
+                    def est_arc_disponible(u, v, t):                # Filtre pour Dijkstra
+                        # Vérification des blocages initiaux du problème
                         for sillon in probleme.blocages:
                             if sillon.est_dans_sillon(u, v, t):
                                 return False
@@ -670,14 +711,10 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         for sillon in blocagesItineraires:
                             if sillon.est_dans_sillon(u, v, t) and sillon.motrice != mot:
                                 return False
-                        # Vérification des transitions bloquées (en fonction des angles de virages)
-                        if pred:
-                            transBloquees = probleme.graphe.nodes[u]['transBloquees']
-                            if sorted([pred, v]) in transBloquees:      # Si l'arête est bloquée, elle ne peut pas être empruntée
-                                return False
                         return True
-
-                    itineraire = dijkstra_temporel(probleme.graphe, derniersNoeudsMots[mot], noeudCible, t, est_arc_disponible)
+                    
+                    # Calcul de l'itinéraire
+                    itineraire, rebroussements = dijkstra_special(probleme.graphe, derniersNoeudsMots[mot], noeudCible, t, est_arc_disponible, dureeRebroussement=config.dureeRebroussement)
                     itinerairesActuels[mot] = itineraire
 
                     # Si aucun itinéraire n'est disponible, la motrice est en attente à cet instant
@@ -696,6 +733,13 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                             # Blocage du sens opposé dans le cas où l'exploitation est à voie unique
                             blocagesItineraires.append(Sillon(v[0], u[0], debutParcours, finParcours+config.ecartementMinimal, mot))
                         # TODO: Traiter les cas où la durée est à 0 (passage immédiatement au mouvement suivant. Dans les faits, avoir un itinéraire complet avec un coût nul est très rare) 
+
+                    # Traitement des rebroussements : blocage de tous les arcs connexes
+                    for r in rebroussements:
+                        noeudReb = r[0]
+                        for voisin in probleme.graphe.neighbors(noeudReb):
+                            blocagesItineraires.append(Sillon(noeudReb, voisin, r[1], r[1] + config.dureeRebroussement, mot))
+                            blocagesItineraires.append(Sillon(voisin, noeudReb, r[1], r[1] + config.dureeRebroussement, mot))
 
                 # Calcul de l'avancée sur l'itinéraire actuel
                 if itinerairesActuels[mot]:
@@ -829,11 +873,21 @@ def main():
     config = Config()
     initialiser_logs(config)
 
-    # Importation du problème
+    # Construction du problème
     graphe = importer_graphe(config.cheminGraphe)
-    motrices = [Motrice(0, 388, retourBase=True)]
-    lots = [Lot(0, 478, 509, 0, 500)]
-    blocages = [Sillon(47, 46, 0, 1000)]
+    motrices = [
+        Motrice(0, 690, retourBase=True),
+        Motrice(1, 794, retourBase=True)
+        ]
+    
+    lots = [
+        Lot(0, 738, 794, 0, 200), 
+        Lot(1, 738, 635, 0, 200), 
+        Lot(2, 714, 741, 0, 200), 
+        Lot(3, 711, 720, 0, 200),
+        Lot(4, 692, 735, 0, 200)
+        ]
+    blocages = []# [Sillon(45, 44, 0, 1000)]
     probleme = Probleme(graphe, motrices, lots, blocages)
 
     # Résolution du problème

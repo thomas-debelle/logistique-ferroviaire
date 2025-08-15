@@ -7,6 +7,7 @@ from scipy.spatial import KDTree
 import numpy as np
 import sys
 import folium
+from folium.plugins import MousePosition
 from itertools import combinations
 from collections import deque
 
@@ -26,7 +27,7 @@ vitesseParDefaut = 160          # Par défaut si la vitesse n'est pas renseigné
 vitesseNominaleMax = 220        # Les lignes dont la vitesse nominale max est supérieure à cette valeur sont exclues du graphe.
 rayonRaccordementsStockages = 100       # Rayon de recherche pour raccorder les noeuds de stockage (ITE, Chantiers, etc).
 rayonRaccordementsLignes = 500          # Rayon de recherche pour raccorder les extrémités des lignes. Les angles sont également pris en compte pour le raccordement.
-angleVirageMax = 35             # Angle de virage maximum autorisé. Utilisé comme contrainte pour les raccordements et pour générer les transitions bloquées.
+angleVirageMax = 35             # Angle de virage maximum autorisé. Utilisé comme contrainte pour les raccordements et pour générer les transitions de rebroussement.
 
 statutsLigneAutorises = ['Exploitée', 'Transférée en voie de service']      # Statut des lignes pouvant être ajoutées au graphe
 exploitationsDoubles = ['Double voie', 'Voie banalisée']                    # Type d'exploitation en voies doubles
@@ -173,9 +174,9 @@ def est_dans_zone(point, latMin, latMax, lonMin, lonMax):
     return latMin <= lat <= latMax and lonMin <= lon <= lonMax
 
 def simplifier_graphe(graphe, iter=100):
-    # Fonction pour mise à jour des transitions bloquées
+    # Fonction pour mise à jour des transitions de rebroussement
     def maj_transitions(graphe, noeudCible, ancienVoisin, nouveauVoisin):
-        transBloquees = graphe.nodes[noeudCible]['transBloquees']        # Parcoure les transitions bloquées du premier voisin
+        transBloquees = graphe.nodes[noeudCible]['transRebroussement']        # Parcoure les transitions de rebroussement du premier voisin
         for i, (n1, n2) in enumerate(transBloquees):
             if n1 == ancienVoisin:
                 transBloquees[i] = tuple(sorted([nouveauVoisin, n2]))
@@ -218,7 +219,7 @@ def simplifier_graphe(graphe, iter=100):
 
     # Epurage des transitions après suppression de noeuds
     for noeud in grapheSimplifie.nodes:
-        transBloquees = grapheSimplifie.nodes[noeud]['transBloquees']
+        transBloquees = grapheSimplifie.nodes[noeud]['transRebroussement']
         transASuppr = []
         for t in transBloquees:
             if (not t[0] in grapheSimplifie.nodes) or (not t[1] in grapheSimplifie.nodes):
@@ -266,7 +267,7 @@ def reindexer_graphe(graphe):
 
     # Application du mapping aux transitions
     for noeud in graphe.nodes:
-        transBloquees = graphe.nodes[noeud]['transBloquees']
+        transBloquees = graphe.nodes[noeud]['transRebroussement']
         for i, t in enumerate(transBloquees):
             transBloquees[i] = tuple(sorted([mapping[t[0]], mapping[t[1]]]))        # Application du mapping avec tri, pour que les indices soient dans l'ordre croissant dans les transitions bloquées
 
@@ -275,8 +276,8 @@ def reindexer_graphe(graphe):
 
 def rendre_graphe_immuable(graphe):
     for noeud in graphe.nodes:
-        transitionsImmuables = json.dumps(graphe.nodes[noeud]['transBloquees'])
-        graphe.nodes[noeud]['transBloquees'] = transitionsImmuables
+        transitionsImmuables = json.dumps(graphe.nodes[noeud]['transRebroussement'])
+        graphe.nodes[noeud]['transRebroussement'] = transitionsImmuables
     return graphe
 
 
@@ -440,9 +441,9 @@ for noeud in list(graphe.nodes):
 
 # Construction des transitions bloquées (en fonction des angles d'arrivée et de départ des trains)
 for noeud in graphe.nodes:
-    graphe.nodes[noeud]['transBloquees'] = []
+    graphe.nodes[noeud]['transRebroussement'] = []
     voisins = sorted(list(graphe.neighbors(noeud)))      # Tri lexicographique des coordonnées (pour s'assurer que les combinaisons soient toujours dans le bon ordre)
-    if len(voisins) <= 2:
+    if len(voisins) <= 2 or graphe.nodes[noeud]['typeNoeud'] != 'Croisement':
         continue          # Toutes les transitions sont autorisées s'il y a moins de 3 noeuds
     # Sinon, calcul des angles entre toutes les paires de noeuds voisins
     for paireVoisins in list(combinations(voisins, 2)):
@@ -454,7 +455,7 @@ for noeud in graphe.nodes:
         if (angleVirage > angleVirageMax
             and (poidsVoisin1 > 0 or (poidsVoisin1 == 0 and graphe.nodes[voisin1]['typeNoeud'] == 'Croisement'))
             and (poidsVoisin2 > 0 or (poidsVoisin2 == 0 and graphe.nodes[voisin2]['typeNoeud'] == 'Croisement'))):    # Les noeuds de stockages raccordés ne peuvent pas être sanctionnés, car les angles ne sont pas pris en compte lors du raccordement.
-            graphe.nodes[noeud]['transBloquees'].append(paireVoisins)               # Blocage des virages avec des angles trop élevés
+            graphe.nodes[noeud]['transRebroussement'].append(paireVoisins)               # Blocage des virages avec des angles trop élevés
 
 
 # ------------------------------------------
@@ -493,7 +494,7 @@ for u, v, data in graphe.edges(data=True):
         color="red",
         weight=(4 if exploit == 'Double' else 2),
         opacity=0.6,
-        tooltip=f"<b>Régime d'exploitation</b> : {exploit}<br><b>Temps de parcours</b> : {round(data['weight'], 2)} min"
+        tooltip=f"<b>[{u}, {v}]</b><br><b>Régime d'exploitation</b> : {exploit}<br><b>Temps de parcours</b> : {round(data['weight'], 2)} min"
     ).add_to(map)
 
 # Ajout des nœuds selon leur type
@@ -503,7 +504,7 @@ for noeud, data in graphe.nodes(data=True):
     # Extraction des données
     lat, lon = data['lat'], data['lon']
     idnStr = str(data.get("index", "")).zfill(nbCarIndex)
-    transBloquees = graphe.nodes[noeud]['transBloquees']
+    transRebroussement = graphe.nodes[noeud]['transRebroussement']
     capacite = graphe.nodes[noeud]['capacite']
     typeNoeud = data.get("typeNoeud", 'Croisement')
 
@@ -535,7 +536,7 @@ for noeud, data in graphe.nodes(data=True):
         fill_opacity=0.8,
         tooltip=(str(f'<b>[{idnStr}]</b> ' 
                      + typeNoeud + ' - ' + (data.get("libelle", "")) if typeNoeud != 'Croisement' else f'[{idnStr}] Noeud') 
-                     + '<br><b>Transitions bloquées</b> : ' + (str(transBloquees) if len(transBloquees) > 0 else '')
+                     + '<br><b>Transitions de rebroussement</b> : ' + (str(transRebroussement) if len(transRebroussement) > 0 else '')
                      + '<br><b>Capacité</b> : ' + str(capacite)
                      + '<br><b>Nb. de voisins</b> : ' + str(len(list(graphe.neighbors(noeud))))
                      + '<br><b>Lat.</b> : ' + str(graphe.nodes[noeud]['lat'])
@@ -553,6 +554,7 @@ for noeud, data in graphe.nodes(data=True):
 groupeCroisements.add_to(map)
 groupeStockages.add_to(map)
 folium.LayerControl().add_to(map)       # Création d'un contrôle pour les différentes couches de marqueurs
+MousePosition().add_to(map)
 
 # Exportation de la carte et du graphe
 map.save("graphe_ferroviaire.html")
