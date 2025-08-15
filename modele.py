@@ -8,12 +8,15 @@ import numpy as np
 import logging
 from logging import info, warning, error
 import os
-import datetime
 from glob import glob
 from copy import deepcopy
 from frozendict import frozendict
 from functools import lru_cache
 import json
+from folium.plugins import TimestampedGeoJson
+from datetime import datetime, timedelta
+from carte import generer_carte
+from collections import defaultdict
 
 # ---------------------------------------
 # Définition des classes et des types
@@ -24,20 +27,19 @@ class Config:
         self.fichierLogs = None
         self.nbLogsMax = 10
 
-        self.nbGenerations = 60
-        self.taillePopulation = 150
+        self.nbGenerations = 100
+        self.taillePopulation = 100
         self.cxpb = 0.85
         self.mutpb = 0.15
 
         self.cheminGraphe = 'graphe_ferroviaire.graphml'
-        self.nbMvtParMot = 5                            # Nom de mouvements max par lot dans une solution
-
-        self.lambdaTempsAttente = 3.0                   # Paramètre lambda de la loi exponentielle utilisée pour générer les temps d'attente dans les mutations
-        self.ecartementMinimal = 8                      # Ecartement minimal (en min) entre deux trains qui se suivent
+        
+        self.ecartementMinimal = 8                      # Ecartement temporel minimal (en min) entre deux trains qui se suivent
         self.dureeAttelage = 10                         # Temps de manoeuvre pour l'attelage
         self.dureeDesattelage = 5                       # Temps de manoeuvre pour le désattelage
-        self.dureeRebroussement = 30
-        self.horizonTemp = 600                          # Horizon temporel de la simulation
+        self.dureeRebroussement = 30                    # Temps supplémentaire ajouté en cas de rebroussement sur un arc
+        self.horizonTemp = 800                          # Horizon temporel de la simulation
+        self.dureeConservationBlocages = 50             # Nombre d'instants entre deux nettoyages des blocages temporaires
 
         self.coutMax = 10000                            # Coût logistique maximum, appliqué si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
         self.coutFixeParMotrice = 0                     # Coût logistique fixe pour chaque motrice utilisée dans le problème
@@ -46,6 +48,10 @@ class Config:
         self.coeffDepassementCapaMotrice = 1.0          # Coefficient appliqué aux coûts pour les dépassements de capacité des motrices.
         self.coeffDepassementCapaNoeud = 0.1
 
+        self.lonMin = 2.06                              # Coordonnées pour générer l'animation  
+        self.lonMax = 7.68 
+        self.latMin = 44.39 
+        self.latMax = 46.78
 
 
 class Motrice:
@@ -117,7 +123,6 @@ class Sillon:
         self.motrice = motrice
 
     def est_dans_sillon(self, u, v, t):
-        # TODO: gérer les cas où u et v ne sont pas directement connectée par une arête.
         return (u == self.noeudDebut and v == self.noeudFin and t >= self.tempsDebut and t < self.tempsFin)
     
     def __str__(self):
@@ -127,11 +132,11 @@ class Sillon:
         return self.__str__()
         
 class Probleme:
-    def __init__(self, graphe: nx.Graph, motrices: list, lots: list, blocages: list=[]):
+    def __init__(self, graphe: nx.Graph, motrices: list, lots: list):
         self.graphe = graphe
         self.motrices = motrices
         self.lots = lots
-        self.blocages = blocages              # Liste des sillons bloqués par défaut (par exemple, par d'autres compagnies ferroviaires)
+        self.blocages = defaultdict(list)              # Liste des sillons bloqués par défaut (par exemple, par d'autres compagnies ferroviaires)
 
         indexMotrices = set()
         indexLots = set()
@@ -148,6 +153,12 @@ class Probleme:
         for b in self.blocages:
             if not (b.noeudDebut, b.noeudFin) in self.graphe.edges:
                 warning(f"L'arc ({b.noeudDebut}, {b.noeudFin}) n'existe pas et ne sera pas pris en compte.")
+
+    def ajouter_blocage(self, sillon: Sillon):
+        cle = (sillon.noeudDebut, sillon.noeudFin)
+        if not cle in self.graphe.edges:
+            warning(f"L'arc ({cle}) n'existe pas et ne sera pas pris en compte.")
+        self.blocages[cle].append(sillon)
 
 # TODO: ajouter les temps d'attente 
 # - Soit comme un délai qui doit être écoulé avant d'initer un mouvement
@@ -182,11 +193,12 @@ class Mouvement:
         return hash((self.type, self.lot, self.etape))
 
 class Solution:
-    def __init__(self, objs, tracageMots: Dict[Motrice, List[int]], tracageLots: Dict[Lot, List[int]], tracageAttelages: Dict[Lot, Motrice]):
+    def __init__(self, objs, tracageMots: Dict[Motrice, List[int]], tracageLots: Dict[Lot, List[int]], tracageAttelages: Dict[Lot, Motrice], etapesLots: Dict[Lot, List[int]]):
         self.objs = objs
         self.tracageMots = tracageMots
         self.tracageLots = tracageLots
         self.tracageAttelages = tracageAttelages
+        self.etapesLots = etapesLots
 
 # ---------------------------------------
 # Fonctions 
@@ -206,7 +218,7 @@ def initialiser_logs(config: Config):
         os.mkdir(dossierLogs)
 
     # Création du fichier et affectation au flux de sortie
-    date = datetime.datetime.now()
+    date = datetime.now()
     nomFichier = date.strftime("log_%Y%m%d_%H%M%S.txt")
     config.fichierLogs = open(dossierLogs + '/' + nomFichier, 'w')
 
@@ -597,7 +609,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         indicesMvtsActuels = dict.fromkeys(probleme.motrices, 0)    # Indice du mouvement actuel pour chaque motrice
         indicesEtapesActuelles = dict.fromkeys(probleme.lots, 0)    # Indice de l'étape actuelle pour chaque lot
         itinerairesActuels = dict.fromkeys(probleme.motrices, None) # Itinéraires suivis actuellement pour chaque motrice
-        blocagesItineraires = []                                    # Blocages générés par les itinéraires
+        blocagesItineraires = defaultdict(list)                     # Blocages temporaires générés par les itinéraires des motrices
 
         tempsAttenteMots = dict.fromkeys(probleme.motrices, 0)      # Temps d'attente restant pour chaque motrice
         tempsAttenteLots = dict.fromkeys(probleme.lots, 0)          # Temps d'attente restant pour chaque lot (lors du désattelage)
@@ -645,6 +657,20 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             nbWagonsAtteles[mot] -= lot.taille
             indicesEtapesActuelles[lot] += 1
             return True
+        
+
+        # -------------------------------------------------
+        # Fonction pour le nettoyage des blocages temporaires
+        # -------------------------------------------------
+        def nettoyer_blocages_itineraires(t):
+            """Nettoie les blocages échus, pour chaque arc."""
+            if t % config.dureeConservationBlocages != 0:
+                return
+            for arete in list(blocagesItineraires.keys()):
+                blocagesItineraires[arete] = [
+                    sillon for sillon in blocagesItineraires[arete]
+                    if sillon.tempsFin >= t
+                ]
 
 
         # -------------------------------------------------
@@ -653,15 +679,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         objCoutsLogistiques += len(probleme.motrices) * config.coutFixeParMotrice       # Application des coûts fixes
         for t in range(config.horizonTemp):
             # Nettoyage des blocages d'itinéraires
-            posBlocagesASuppr = []
-            if t % 50 == 0:
-                for i, b in enumerate(blocagesItineraires):
-                    if b.tempsFin < t:
-                        posBlocagesASuppr.append(i)
-                cmptSuppr = 0
-                for i in posBlocagesASuppr:
-                    blocagesItineraires.pop(i - cmptSuppr)
-                    cmptSuppr += 1
+            nettoyer_blocages_itineraires(t)
 
             # Initialisation de l'occupation
             occupationNoeuds = {}                                       # Nombre d'éléments occupant chaque noeud du réseau
@@ -704,12 +722,12 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     
                     def est_arc_disponible(u, v, t):                # Filtre pour Dijkstra
                         # Vérification des blocages initiaux du problème
-                        for sillon in probleme.blocages:
-                            if sillon.est_dans_sillon(u, v, t):
+                        for sillon in probleme.blocages.get((u, v), []):
+                            if sillon.tempsDebut <= t < sillon.tempsFin and sillon.motrice != mot:
                                 return False
                         # Vérification des blocages ajoutés par les itinéraires
-                        for sillon in blocagesItineraires:
-                            if sillon.est_dans_sillon(u, v, t) and sillon.motrice != mot:
+                        for sillon in blocagesItineraires.get((u, v), []):
+                            if sillon.tempsDebut <= t < sillon.tempsFin and sillon.motrice != mot:
                                 return False
                         return True
                     
@@ -728,18 +746,18 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         debutParcours = round(u[1])
                         finParcours = round(v[1])
 
-                        blocagesItineraires.append(Sillon(u[0], v[0], debutParcours, debutParcours+config.ecartementMinimal, mot))      # Ajout des sillons bloqués
+                        blocagesItineraires[(u[0], v[0])].append(Sillon(u[0], v[0], debutParcours, debutParcours+config.ecartementMinimal, mot))        # Ajout des sillons bloqués  
                         if probleme.graphe.edges[u[0], v[0]]['exploit'] == 'Simple':
                             # Blocage du sens opposé dans le cas où l'exploitation est à voie unique
-                            blocagesItineraires.append(Sillon(v[0], u[0], debutParcours, finParcours+config.ecartementMinimal, mot))
+                            blocagesItineraires[(v[0], u[0])].append(Sillon(v[0], u[0], debutParcours, finParcours+config.ecartementMinimal, mot))
                         # TODO: Traiter les cas où la durée est à 0 (passage immédiatement au mouvement suivant. Dans les faits, avoir un itinéraire complet avec un coût nul est très rare) 
 
                     # Traitement des rebroussements : blocage de tous les arcs connexes
                     for r in rebroussements:
                         noeudReb = r[0]
                         for voisin in probleme.graphe.neighbors(noeudReb):
-                            blocagesItineraires.append(Sillon(noeudReb, voisin, r[1], r[1] + config.dureeRebroussement, mot))
-                            blocagesItineraires.append(Sillon(voisin, noeudReb, r[1], r[1] + config.dureeRebroussement, mot))
+                            blocagesItineraires[(noeudReb, voisin)].append(Sillon(noeudReb, voisin, r[1], r[1] + config.dureeRebroussement, mot))
+                            blocagesItineraires[(voisin, noeudReb)].append(Sillon(voisin, noeudReb, r[1], r[1] + config.dureeRebroussement, mot))
 
                 # Calcul de l'avancée sur l'itinéraire actuel
                 if itinerairesActuels[mot]:
@@ -807,8 +825,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
         # Finalisation de la simulation
         if nbLotsValides < len(probleme.lots):
-            objCoutsLogistiques = config.coutMax        # Neutralisation de l'objectif si les lots n'atteignent pas leur destination dans le temps imparti
-        sol = Solution((objDeplacement, objCoutsLogistiques), tracageMots, tracageLots, tracageAttelages)
+            objDeplacement = config.coutMax
+            objCoutsLogistiques = config.coutMax        # Neutralisation des objectifs si les lots n'atteignent pas leur destination dans le temps imparti
+        sol = Solution((objDeplacement, objCoutsLogistiques), tracageMots, tracageLots, tracageAttelages, ind.etapesLots)
         return sol
 
     # Initialisation de l'algorithme génétique
@@ -857,13 +876,97 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         
         info(logbook.stream)
 
-    # Extraction du front de pareto
+    # Extraction du front de pareto et sélection d'une solution
     frontPareto = tools.sortNondominated(pop, len(pop), first_front_only=True)[0]
-    for ind in frontPareto[:5]:
-        info(f"Scores : ({int(ind.fitness.values[0])}, {int(ind.fitness.values[1])})")
-
-    sol = simuler_individu(frontPareto[0], tracage=True)
+    sol = simuler_individu(frontPareto[0], tracage=True)        # Sélection d'un individu sur le front
+    info(f'Solution sélectionnée: {sol.objs}')
     return sol
+
+
+# ---------------------------------------
+# Affichage
+# ---------------------------------------
+def couleur_aleatoire():
+    return "#{:06x}".format(random.randint(0, 0xFFFFFF))
+
+def generer_animation(probleme: Probleme, solution: Solution, config: Config,
+                      instantDebut=datetime(2025, 1, 1, 8, 0, 0),
+                      pasTemps=timedelta(minutes=1)):
+
+    graphe = probleme.graphe
+    map = generer_carte(graphe, config.latMin, config.latMax, config.lonMin, config.lonMax, aretesVisibles=False, couleurAretes='black', supprimerCouleursNoeuds=True)
+
+    couleursMots = {mot: couleur_aleatoire() for mot in probleme.motrices}
+    features = []
+
+    # Traçage des motrices
+    for mot in probleme.motrices:    
+        coords = []
+        instants = []
+        for pas, noeud in enumerate(solution.tracageMots[mot]):
+            lat, lon = graphe.nodes[noeud]['lat'], graphe.nodes[noeud]['lon']
+            coords.append([lon, lat])  # Folium attend (lon, lat)
+            t = instantDebut + pas * pasTemps
+            instants.append(t.isoformat())
+
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": coords
+            },
+            "properties": {
+                "times": instants,
+                "style": {"color": couleursMots[mot]},
+                "popup": str(mot)
+            }
+        }
+        features.append(feature)
+
+    # Traçage des lots
+    for lot in probleme.lots:
+        coords = []
+        instants = []
+        for pas, noeud in enumerate(solution.tracageLots[lot]):
+            lat, lon = graphe.nodes[noeud]['lat'], graphe.nodes[noeud]['lon']
+            coords.append([lon, lat])
+            t = instantDebut + pas * pasTemps
+            instants.append(t.isoformat())
+
+        # On crée une LineString invisible pour l'animation du marqueur
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": coords},
+            "properties": {
+                "times": instants,
+                "style": {"color": "rgba(0,0,0,0)"},
+                "icon": "circle",          # marqueur visible
+                "iconstyle": {
+                    "fillColor": 'red',
+                    "fillOpacity": 1,
+                    "stroke": True,
+                    "radius": 10
+                },
+                "popup": str([str(n) + ' | ' + lib_noeud(probleme.graphe, n) for n in solution.etapesLots[lot]])
+            }
+        })
+
+
+    geojson = {
+        "type": "FeatureCollection",
+        "features": features
+    }
+
+    TimestampedGeoJson(
+        data=geojson,
+        period="PT1M",
+        add_last_point=True,
+        auto_play=True
+    ).add_to(map)
+
+    return map
+
+
 
 # ---------------------------------------
 # Processus principal
@@ -873,11 +976,13 @@ def main():
     config = Config()
     initialiser_logs(config)
 
-    # Construction du problème
+    # Initialisation des données
     graphe = importer_graphe(config.cheminGraphe)
+    
     motrices = [
         Motrice(0, 690, retourBase=True),
-        Motrice(1, 794, retourBase=True)
+        Motrice(1, 794, retourBase=True),
+        Motrice(2, 691, retourBase=False)
         ]
     
     lots = [
@@ -885,13 +990,25 @@ def main():
         Lot(1, 738, 635, 0, 200), 
         Lot(2, 714, 741, 0, 200), 
         Lot(3, 711, 720, 0, 200),
-        Lot(4, 692, 735, 0, 200)
+        Lot(4, 692, 735, 0, 200),
+        Lot(5, 764, 740, 0, 200),
+        Lot(6, 648, 790, 0, 200),
+        Lot(7, 633, 591, 0, 200),
+        Lot(8, 771, 772, 0, 200)
         ]
-    blocages = []# [Sillon(45, 44, 0, 1000)]
-    probleme = Probleme(graphe, motrices, lots, blocages)
+    
+     # Construction du problème
+    probleme = Probleme(graphe, motrices, lots)
+
+    # Ajout des blocages
+    #probleme.ajouter_blocage(Sillon(400, 132, 0, 1000))
+    #probleme.ajouter_blocage(Sillon(132, 400, 0, 1000))
 
     # Résolution du problème
-    resoudre_probleme(config, probleme)
-    pass
+    sol = resoudre_probleme(config, probleme)
+    
+    # Génération de l'animation
+    map = generer_animation(probleme, sol, config)
+    map.save("animation_trains.html")
 
 main()
