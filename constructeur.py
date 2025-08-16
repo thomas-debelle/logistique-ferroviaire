@@ -175,12 +175,12 @@ def est_dans_zone(point, latMin, latMax, lonMin, lonMax):
 def simplifier_graphe(graphe, iter=100):
     # Fonction pour mise à jour des transitions de rebroussement
     def maj_transitions(graphe, noeudCible, ancienVoisin, nouveauVoisin):
-        transBloquees = graphe.nodes[noeudCible]['transRebroussement']        # Parcoure les transitions de rebroussement du premier voisin
-        for i, (n1, n2) in enumerate(transBloquees):
+        transRebroussement = graphe.nodes[noeudCible]['transRebroussement']        # Parcoure les transitions de rebroussement du premier voisin
+        for i, (n1, n2) in enumerate(transRebroussement):
             if n1 == ancienVoisin:
-                transBloquees[i] = tuple(sorted([nouveauVoisin, n2]))
+                transRebroussement[i] = tuple(sorted([nouveauVoisin, n2]))
             elif n2 == ancienVoisin:
-                transBloquees[i] = tuple(sorted([n1, nouveauVoisin]))       # Nouveau noeud source de la transition
+                transRebroussement[i] = tuple(sorted([n1, nouveauVoisin]))       # Nouveau noeud source de la transition
 
 
     # Processus principal
@@ -218,13 +218,13 @@ def simplifier_graphe(graphe, iter=100):
 
     # Epurage des transitions après suppression de noeuds
     for noeud in grapheSimplifie.nodes:
-        transBloquees = grapheSimplifie.nodes[noeud]['transRebroussement']
+        transRebroussement = grapheSimplifie.nodes[noeud]['transRebroussement']
         transASuppr = []
-        for t in transBloquees:
+        for t in transRebroussement:
             if (not t[0] in grapheSimplifie.nodes) or (not t[1] in grapheSimplifie.nodes):
                 transASuppr.append(t)
         for t in transASuppr:
-            transBloquees.remove(t)
+            transRebroussement.remove(t)
 
     return grapheSimplifie
 
@@ -266,9 +266,9 @@ def reindexer_graphe(graphe):
 
     # Application du mapping aux transitions
     for noeud in graphe.nodes:
-        transBloquees = graphe.nodes[noeud]['transRebroussement']
-        for i, t in enumerate(transBloquees):
-            transBloquees[i] = tuple(sorted([mapping[t[0]], mapping[t[1]]]))        # Application du mapping avec tri, pour que les indices soient dans l'ordre croissant dans les transitions bloquées
+        transRebroussement = graphe.nodes[noeud]['transRebroussement']
+        for i, t in enumerate(transRebroussement):
+            transRebroussement[i] = tuple(sorted([mapping[t[0]], mapping[t[1]]]))        # Application du mapping avec tri, pour que les indices soient dans l'ordre croissant dans les transitions bloquées
 
     # Finalisation de la réindexation
     return nx.relabel_nodes(graphe, mapping)

@@ -19,41 +19,49 @@ from carte import generer_carte
 from collections import defaultdict
 from PIL import Image, ImageDraw
 import io, base64
+import signal
+
+# Pour l'interruption du programme
+def handler(signum, frame):
+    raise KeyboardInterrupt
+
+signal.signal(signal.SIGINT, handler)
 
 # ---------------------------------------
 # Définition des classes et des types
 # ---------------------------------------
 class Config:
     def __init__(self):
+        # Paramètres du programme
         self.dossierLogs = 'logs'
         self.fichierLogs = None
         self.nbLogsMax = 10
-        self.cheminGraphe = 'graphe_ferroviaire.graphml'
 
-        self.nbGenerations = 50
-        self.taillePopulation = 100
-        self.cxpb = 0.85
-        self.mutpb = 0.25
+        # Paramètres de l'algorithme
+        self.nbGenerations = 300                        # Nombre de génération
+        self.taillePopulation = 100                     # Taille de la population
+        self.cxpb = 0.85                                # Probabilité de croisement
+        self.mutpb = 0.25                               # Probabilité de mutation
         
         self.ecartementMinimal = 8                      # Ecartement temporel minimal (en min) entre deux trains qui se suivent
-        self.dureeAttelage = 10                         # Temps de manoeuvre pour l'attelage
-        self.dureeDesattelage = 5                       # Temps de manoeuvre pour le désattelage
-        self.dureeRebroussement = 30                    # Temps supplémentaire ajouté en cas de rebroussement sur un arc
-        self.horizonTemp = 800                          # Horizon temporel de la simulation
+        self.dureeAttelage = 10                         # Temps de manoeuvre pour l'attelage (en min)
+        self.dureeDesattelage = 5                       # Temps de manoeuvre pour le désattelage (en min)
+        self.dureeRebroussement = 30                    # Temps supplémentaire ajouté en cas de rebroussement sur un arc (en min)
+        self.horizonTemp = 1440                         # Horizon temporel de la simulation (en min)
         self.dureeConservationBlocages = 50             # Nombre d'instants entre deux nettoyages des blocages temporaires
-        self.lambdaTempsAttente = 20.0                   # Facteur d'échelle utilisé pour la distribution exponentielle des temps d'attente
-        self.orienterAjoutEtape = False                  # Si activé, une heuristique est utilisée pour orienter l'ajout d'étapes (recherche sur le plus court chemins entre les étapes précédentes et suivantes)
+        self.lambdaTempsAttente = 20.0                  # Facteur d'échelle utilisé pour la distribution exponentielle des temps d'attente
+        self.orienterAjoutEtape = False                 # Si activé, une heuristique est utilisée pour orienter l'ajout d'étapes (recherche sur le plus court chemins entre les étapes précédentes et suivantes)
 
-        self.coutMax = 10000                            # Coût logistique maximum, appliqué si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
+        self.coutMax = 10000                            # Coût maximum, appliqué à l'objectif de distance si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
         self.coutFixeParMotrice = 0                     # Coût logistique fixe pour chaque motrice utilisée dans le problème
         self.coeffDeplacements = 1.0                    # Coefficient appliqué à l'objectif de déplacement
         self.coeffRetard = 1.0                          # Coefficient appliqué aux coûts de retard à l'arrivée
-        self.coeffDepassementCapaMotrice = 1.0          # Coefficient appliqué aux coûts pour les dépassements de capacité des motrices.
-        self.coeffDepassementCapaNoeud = 0.1
+        self.coeffDepassementCapaMotrice = 1.0          # Coefficient appliqué aux coûts pour les dépassements de la capacité de traction des motrices.
+        self.coeffDepassementCapaNoeud = 1.0            # Coefficient appliqué aux coûts pour les dépassements de la capacité de stockage des noeuds.
 
         self.lonMin = 2.06                              # Coordonnées pour générer l'animation  
         self.lonMax = 7.68 
-        self.latMin = 44.39 
+        self.latMin = 44.39  
         self.latMax = 46.78
 
 
@@ -141,6 +149,7 @@ class Probleme:
         self.lots = lots
         self.blocages = defaultdict(list)              # Liste des sillons bloqués par défaut (par exemple, par d'autres compagnies ferroviaires)
 
+        # Vérification des index
         indexMotrices = set()
         indexLots = set()
         for mot in self.motrices:
@@ -310,6 +319,7 @@ def dijkstra_special(graphe, origine, dest, instant=0, filtre=None, dureeRebrous
     Détecte et pénalise également les rebroussements.
     Retourne un chemin et la liste des rebroussements.
     """
+
     queue = [(instant, origine, [], [], None)]  # (tempsCumul, noeudActuel, chemin, noeudPrecedent)
     visites = {}
 
@@ -339,6 +349,7 @@ def dijkstra_special(graphe, origine, dest, instant=0, filtre=None, dureeRebrous
                 heapq.heappush(queue, (instantActuel + dureeParcours, successeur, chemin, nouveauxRebroussements, noeudActuel))     # Le noeud peut être emprunté, et est ajouté à la pile
 
     return None, None
+
     
 
 
@@ -511,7 +522,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
     
     def muter_individu(ind: Individu):
         tirageMut = random.choice([0, 1])
-        # Mutation des étapes (ajout, suppression, ou régénération)
+        # Mutation des étapes (ajout, suppression)
         if tirageMut == 0:
             lot = random.choice(probleme.lots)
             subTirageMut = random.choice([0, 1, 2]) if len(ind.etapesLots[lot]) > 2 else 0         # Pas de suppression ou variation si seulement origine et dest
@@ -840,9 +851,10 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 objCoutsLogistiques += config.coeffDepassementCapaNoeud * max(occ - probleme.graphe.nodes[noeud]['capacite'], 0)
 
         # Finalisation de la simulation
-        if nbLotsValides < len(probleme.lots):
-            objDeplacement = config.coutMax
-            objCoutsLogistiques = config.coutMax        # Neutralisation des objectifs si les lots n'atteignent pas leur destination dans le temps imparti
+        for lot in probleme.lots:
+            if not lotsValides[lot]:
+                objDeplacement = config.coutMax     # Neutralisation de l'objectif de déplacement : pas d'importance tant que tous les lots ne sont pas livrés
+                objCoutsLogistiques += (config.horizonTemp - lot.finCommande) * config.coeffRetard      # Ajout du retard maximal par rapport à l'horizon temporel
         sol = Solution((objDeplacement, objCoutsLogistiques), tracageMots, tracageLots, tracageAttelages, ind.etapesLots)
         return sol
 
@@ -880,17 +892,20 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         ind.fitness.values = toolbox.evaluate(ind)
 
     # Boucle de l'algorithme NSGA-II
-    for gen in range(nbGenerations):
-        progeniture = algorithms.varAnd(pop, toolbox, cxpb, mutpb)
-        for ind in progeniture:
-            ind.fitness.values = toolbox.evaluate(ind)
-        pop = toolbox.select(pop + progeniture, k=len(pop))
+    try:
+        for gen in range(nbGenerations):
+            progeniture = algorithms.varAnd(pop, toolbox, cxpb, mutpb)
+            for ind in progeniture:
+                ind.fitness.values = toolbox.evaluate(ind)
+            pop = toolbox.select(pop + progeniture, k=len(pop))
 
-        # Affichage des statistiques de la population
-        record = stats.compile(pop)
-        logbook.record(gen=gen, nevals=len(progeniture), **record)
+            # Affichage des statistiques de la population
+            record = stats.compile(pop)
+            logbook.record(gen=gen, nevals=len(progeniture), **record)
         
-        info(logbook.stream)
+            info(logbook.stream)
+    except KeyboardInterrupt:
+        print("Arrêt demandé, terminaison de l'algorithme.")
 
     # Extraction du front de pareto et sélection d'une solution
     frontPareto = tools.sortNondominated(pop, len(pop), first_front_only=True)[0]
@@ -1020,22 +1035,21 @@ def main():
     initialiser_logs(config)
 
     # Initialisation des données
-    graphe = importer_graphe(config.cheminGraphe)
+    graphe = importer_graphe('graphe_ferroviaire.graphml')
     
-    motrices = [
-        Motrice(0, 705, retourBase=True),
-        Motrice(1, 605, retourBase=True)
-        ]
-
-    lots = [
-        Lot(0, 658, 794, 0, 1), 
-        Lot(1, 691, 635, 0, 1), 
-        Lot(2, 691, 741, 0, 1), 
-        Lot(3, 661, 720, 0, 1)
-        ]
+    # Génération automatique d'un problème
+    noeudsCapa = [n for n, d in graphe.nodes(data=True) if d.get('capacite') > 0]
+    mots = []
+    for m in range(2):
+        mots.append(Motrice(len(mots), random.choice(noeudsCapa), retourBase=True))
+    lots = []
+    for l in range(4):
+        dep, arr = random.sample(noeudsCapa, 2)
+        arr = 497       # Triage Lyon sud
+        lots.append(Lot(len(lots), dep, arr, 0, 1))
     
      # Construction du problème
-    probleme = Probleme(graphe, motrices, lots)
+    probleme = Probleme(graphe, mots, lots)
 
     # Ajout des blocages
     # probleme.ajouter_blocage(Sillon(400, 132, 0, 1000, probleme.motrices[1]))
