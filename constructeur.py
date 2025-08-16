@@ -6,19 +6,16 @@ from geopy.distance import geodesic
 from scipy.spatial import KDTree
 import numpy as np
 import sys
-import folium
-from folium.plugins import MousePosition
 from itertools import combinations
-from collections import deque
 from carte import generer_carte
 
 
 # -------------------------------------
 # Paramètres
 # -------------------------------------
-# Paramètres de données
+# Paramètres de données (mettre le chemin à None pour ne pas ajouter les données)
 cheminFichierLignes = 'données/liste-des-lignes.csv'           # Remarque: le fichier des lignes a été consolidé avec des informations provenant de nombreuses sources.
-cheminFichierGares = 'données/liste-des-gares.csv'
+cheminFichierGares = None #'données/liste-des-gares.csv'
 cheminFichierTriages = 'données/liste-des-triages.csv'
 cheminFichierITE = 'données/liste-des-ite.csv'
 cheminFichierChantiers = 'données/chantiers-de-transport-combines.csv'
@@ -286,10 +283,10 @@ def rendre_graphe_immuable(graphe):
 # -------------------------------------
 # Chargement des données
 dfLignes = pd.read_csv(cheminFichierLignes, sep=';')
-dfGares = pd.read_csv(cheminFichierGares, sep=';')
-dfTriages = pd.read_csv(cheminFichierTriages, sep=';')
-dfITE = pd.read_csv(cheminFichierITE, sep=';')
-dfChantiers = pd.read_csv(cheminFichierChantiers, sep=';')
+dfGares = pd.read_csv(cheminFichierGares, sep=';') if cheminFichierGares else pd.DataFrame()
+dfTriages = pd.read_csv(cheminFichierTriages, sep=';') if cheminFichierTriages else pd.DataFrame()
+dfITE = pd.read_csv(cheminFichierITE, sep=';') if cheminFichierITE else pd.DataFrame()
+dfChantiers = pd.read_csv(cheminFichierChantiers, sep=';') if cheminFichierChantiers else pd.DataFrame()
 
 # Retraitement des données
 dfLignes['V_MAX'] = pd.to_numeric(dfLignes['V_MAX'], errors='coerce')

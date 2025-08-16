@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw
 import io, base64
 import signal
 from sys import maxsize
+from math import ceil
 
 # Pour l'interruption du programme
 def handler(signum, frame):
@@ -39,21 +40,25 @@ class Config:
         self.nbLogsMax = 10
 
         # Paramètres de l'algorithme
-        self.nbGenerations = 300                        # Nombre de génération
+        self.nbGenerations = 500                        # Nombre de génération
         self.taillePopulation = 100                     # Taille de la population
         self.cxpb = 0.85                                # Probabilité de croisement
         self.mutpb = 0.25                               # Probabilité de mutation
         
+        self.horizonTemp = 20000                         # Horizon temporel de la simulation (en min)
+        self.pasTemp = 15                               # Pas temporel
+        self.limiteDureeItineraire = 10000              # Au delà de cette limite, les motrices attendent jusqu'à avoir un initinéraire plus favorable
+        self.tempoItineraireIndispo = 100                 # Temps d'attente si la limite de durée d'itinéraire est dépassée (pas d'itinéraire dispo)      # TODO: ajouter les deux
+
         self.ecartementMinimal = 8                      # Ecartement temporel minimal (en min) entre deux trains qui se suivent
         self.dureeAttelage = 10                         # Temps de manoeuvre pour l'attelage (en min)
         self.dureeDesattelage = 5                       # Temps de manoeuvre pour le désattelage (en min)
         self.dureeRebroussement = 30                    # Temps supplémentaire ajouté en cas de rebroussement sur un arc (en min)
-        self.horizonTemp = 1440                         # Horizon temporel de la simulation (en min)
         self.dureeConservationBlocages = 50             # Nombre d'instants entre deux nettoyages des blocages temporaires
         self.lambdaTempsAttente = 20.0                  # Facteur d'échelle utilisé pour la distribution exponentielle des temps d'attente
         self.orienterAjoutEtape = False                 # Si activé, une heuristique est utilisée pour orienter l'ajout d'étapes (recherche sur le plus court chemins entre les étapes précédentes et suivantes)
 
-        self.coutMax = 10000                            # Coût maximum, appliqué à l'objectif de distance si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
+        self.coutMax = 100000                            # Coût maximum, appliqué à l'objectif de distance si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
         self.coutFixeParMotrice = 0                     # Coût logistique fixe pour chaque motrice utilisée dans le problème
         self.coeffDeplacements = 1.0                    # Coefficient appliqué à l'objectif de déplacement
         self.coeffRetard = 1.0                          # Coefficient appliqué aux coûts de retard à l'arrivée
@@ -203,12 +208,12 @@ class Mouvement:
         return hash((self.type, self.lot, self.etape))
 
 class Solution:
-    def __init__(self, objs, tracageMots: Dict[Motrice, List[int]], tracageLots: Dict[Lot, List[int]], tracageAttelages: Dict[Lot, Motrice], etapesLots: Dict[Lot, List[int]]):
+    def __init__(self, objs, tracageMots: Dict[Motrice, List[int]], tracageLots: Dict[Lot, List[int]], tracageAttelages: Dict[Lot, Motrice], ind):
         self.objs = objs
         self.tracageMots = tracageMots
         self.tracageLots = tracageLots
         self.tracageAttelages = tracageAttelages
-        self.etapesLots = etapesLots
+        self.ind = ind
 
 # ---------------------------------------
 # Fonctions 
@@ -592,7 +597,15 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         enfant1 = Individu(ind1)
         enfant2 = Individu(ind2)
         # Croisement des étapes
-        lot = random.choice(probleme.lots)
+        lots = random.sample(probleme.lots, int(ceil(len(probleme.lots)/2)))
+        for lot in lots:
+            enfant1, enfant2 = echanger_lot(ind1, ind2, lot)
+        return creator.Individual(enfant1), creator.Individual(enfant2)
+
+    def echanger_lot(ind1: Individu, ind2: Individu, lot: Lot):
+        enfant1 = Individu(ind1)
+        enfant2 = Individu(ind2)
+        # Croisement des étapes
         enfant1.etapesLots[lot] = ind2.etapesLots[lot]
         enfant2.etapesLots[lot] = ind1.etapesLots[lot]
         for mot in probleme.motrices:
@@ -611,8 +624,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             for i, mvt in transfertsInd2:
                 insertAt = min(i, len(enfant1.mvtsMotrices[mot]))
                 enfant1.mvtsMotrices[mot].insert(insertAt, mvt)
-
-        return creator.Individual(enfant1), creator.Individual(enfant2)
+        return enfant1, enfant2
 
     @lru_cache
     def evaluer_individu(ind: Individu):
@@ -645,7 +657,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         tracageLots = {}
         tracageAttelages = {}
         lotsValides = dict.fromkeys(probleme.lots, False)
+        motsValides = dict.fromkeys(probleme.motrices, False)
         nbLotsValides = 0
+        nbMotsValides = 0
 
         # Initialisation des derniers noeuds
         for mot in probleme.motrices:
@@ -655,9 +669,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
         # Initialisation du traçage (si activé)
         if tracage:
-            tracageMots = {mot: [None] * config.horizonTemp for mot in probleme.motrices}       # Copie par compréhension de liste pour éviter de créer des référence vers la même liste avec fromkeys
-            tracageLots = {lot: [None] * config.horizonTemp for lot in probleme.lots}
-            tracageAttelages = {lot: [None] * config.horizonTemp for lot in probleme.lots}
+            tracageMots = {mot: [None] * int(ceil(config.horizonTemp / config.pasTemp)) for mot in probleme.motrices}       # Copie par compréhension de liste pour éviter de créer des référence vers la même liste avec fromkeys
+            tracageLots = {lot: [None] * int(ceil(config.horizonTemp / config.pasTemp)) for lot in probleme.lots}
+            tracageAttelages = {lot: [None] * int(ceil(config.horizonTemp / config.pasTemp)) for lot in probleme.lots}
 
 
         # -------------------------------------------------
@@ -701,7 +715,11 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         # Boucle temporelle
         # -------------------------------------------------
         objCoutsLogistiques += len(probleme.motrices) * config.coutFixeParMotrice       # Application des coûts fixes
-        for t in range(config.horizonTemp):
+        for t in range(0, config.horizonTemp, config.pasTemp):
+            # Sortie de la boucle temporelle si tout est terminé
+            if nbLotsValides == len(probleme.lots) and nbMotsValides == len(probleme.motrices):
+                break
+
             # Nettoyage des blocages d'itinéraires
             nettoyer_blocages_itineraires(t)
 
@@ -715,11 +733,11 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             # Mise à jour du traçage (si activé)
             if tracage:
                 for mot in probleme.motrices:
-                    tracageMots[mot][t] = derniersNoeudsMots[mot]
+                    tracageMots[mot][int(ceil(t / config.pasTemp))] = derniersNoeudsMots[mot]
                 for lot in probleme.lots:
-                    tracageLots[lot][t] = derniersNoeudsLots[lot]
+                    tracageLots[lot][int(ceil(t / config.pasTemp))] = derniersNoeudsLots[lot]
                 for lot in probleme.lots:
-                    tracageAttelages[lot][t] = attelages.get(lot, None)
+                    tracageAttelages[lot][int(ceil(t / config.pasTemp))] = attelages.get(lot, None)
 
             # Simulation des motrices
             for mot in probleme.motrices:
@@ -735,6 +753,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         noeudCible = mot.noeudOrigine
                         mvtActuel = None                # Le retour à la base est un déplacement spécial en dehors des mouvements de l'individu
                     else:
+                        if not motsValides[mot]:
+                            motsValides[mot] = True
+                            nbMotsValides += 1
                         continue        # Plus de traitement pour la motrice
 
                 else:
@@ -742,7 +763,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     lotCible = mvtActuel.lot
                     noeudCible = ind.etapesLots[lotCible][mvtActuel.etape]
 
-                # Si la motrice n'est pas à destination, génération d'un nouvel itinéraire
+                # -------------------------------------------------
+                # Génération d'un nouvel itinéraire (si nécessaire)
+                # -------------------------------------------------
                 if derniersNoeudsMots[mot] != noeudCible and not itinerairesActuels.get(mot, None):
                     def cout_arc(u, v, t, mot):
                         # Vérification des blocages initiaux du problème
@@ -763,11 +786,13 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         t, 
                         fonctionCout=lambda u, v, instant: cout_arc(u, v, instant, mot), 
                         dureeRebroussement=config.dureeRebroussement)
-                    itinerairesActuels[mot] = itineraire
-
-                    # Si aucun itinéraire n'est disponible, la motrice est en attente à cet instant
-                    if not itineraire:
+                    
+                    # Si le meilleur itinéraire proposé est trop long (ou de durée infinie), la motrice est mise en attente pour la durée de temporisation avant de chercher à nouveau un itinéraire
+                    if itineraire[-1][1] - itineraire[-1][0] > config.limiteDureeItineraire:
+                        tempsAttenteMots[mot] += config.tempoItineraireIndispo
                         continue
+                    else:
+                        itinerairesActuels[mot] = itineraire
 
                     # S'il y a un temps d'attente attachée à un mouvement: ajout aux attentes de la motrice (avant début de l'itinéraire)
                     if mvtActuel and mvtActuel.attente > 0:
@@ -793,7 +818,9 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                             blocagesItineraires[(noeudReb, voisin)].append(Sillon(noeudReb, voisin, r[1], r[1] + config.dureeRebroussement, mot))
                             blocagesItineraires[(voisin, noeudReb)].append(Sillon(voisin, noeudReb, r[1], r[1] + config.dureeRebroussement, mot))
 
+                # -------------------------------------------------
                 # Calcul de l'avancée sur l'itinéraire actuel
+                # -------------------------------------------------
                 if itinerairesActuels[mot]:
                     itineraireTermine = True
                     itineraire = itinerairesActuels[mot]
@@ -810,7 +837,10 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                         itinerairesActuels[mot] = None                                                              # Neutralisation de l'itinéraire
                         objDeplacement += dureeItineraire * config.coeffDeplacements                                # Application de la pénalité de déplacement
 
-                # Application de l'action liée au mouvement (pas d'action dans le cas d'un retour base)
+                # -------------------------------------------------
+                # Traitement de l'action
+                # -------------------------------------------------
+                # Si l'itinéraire était associé à un mouvement : application de l'action liée au mouvement
                 if (not mvtActuel is None) and derniersNoeudsMots[mot] == noeudCible:
                     actionValide = False            
                     # Pour Récupérer: vérifie que le lot est bien à l'étape cible, n'est pas en attente, et que la commande a bien commencé
@@ -826,6 +856,12 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     # Passage au mouvement suivant
                     if actionValide:
                         indicesMvtsActuels[mot] += 1
+                # Si l'itinéraire n'était associé à un mouvement : correspond à un retour à la base terminé. 
+                elif (mvtActuel is None) and derniersNoeudsMots[mot] == mot.noeudOrigine:
+                    if not motsValides[mot]:
+                        motsValides[mot] = True
+                        nbMotsValides += 1
+
 
             # Simulation des lots
             for lot in probleme.lots:
@@ -846,7 +882,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                 if attelages.get(lot, None) or derniersNoeudsLots[lot] != lot.noeudDest:
                     continue
 
-                # Validation du lot
+                # Si le lot a atteint sa destination pour la première fois, validation du lot
                 if not lotsValides[lot]:
                     if t >= lot.finCommande:        # Application de la pénalité de retard
                         objCoutsLogistiques += (t - lot.finCommande) * config.coeffRetard           # La pénalité correspond au nombre d'instants écoulé depuis la fin de la commande
@@ -857,12 +893,20 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             for noeud, occ in occupationNoeuds.items():
                 objCoutsLogistiques += config.coeffDepassementCapaNoeud * max(occ - probleme.graphe.nodes[noeud]['capacite'], 0)
 
+        # Finalisation du traçage (suppression des extensions inutiles)
+        if tracage:
+            for mot in probleme.motrices:
+                tracageMots[mot] = tracageMots[mot][:int(ceil(t / config.pasTemp))]     # Suppression de toutes les entrées à None
+            for lot in probleme.lots:
+                tracageLots[lot] = tracageLots[lot][:int(ceil(t / config.pasTemp))]
+                tracageAttelages[lot] = tracageAttelages[lot][:int(ceil(t / config.pasTemp))]
+
         # Finalisation de la simulation
         for lot in probleme.lots:
-            if not lotsValides[lot]:
+            if not lotsValides[lot]:        # TODO: prendre en compte le retour à la base qui peut ne pas être terminé
                 objDeplacement = config.coutMax     # Neutralisation de l'objectif de déplacement : pas d'importance tant que tous les lots ne sont pas livrés
                 objCoutsLogistiques += (config.horizonTemp - lot.finCommande) * config.coeffRetard      # Ajout du retard maximal par rapport à l'horizon temporel
-        sol = Solution((objDeplacement, objCoutsLogistiques), tracageMots, tracageLots, tracageAttelages, ind.etapesLots)
+        sol = Solution((objDeplacement, objCoutsLogistiques), tracageMots, tracageLots, tracageAttelages, ind)
         return sol
 
     # Initialisation de l'algorithme génétique
@@ -996,7 +1040,7 @@ def generer_animation(probleme: Probleme, solution: Solution, config: Config,
             t = instantDebut + pas * pasTemps
             instants.append(t.isoformat())
 
-        # On crée une LineString invisible pour l'animation du marqueur
+        # LineString invisible pour le mouvement
         features.append({
             "type": "Feature",
             "geometry": {"type": "LineString", "coordinates": coords},
@@ -1007,14 +1051,32 @@ def generer_animation(probleme: Probleme, solution: Solution, config: Config,
                 "iconstyle": {
                     "fillColor": 'red',
                     "fillOpacity": 1,
-                    "stroke": True,
-                    "color": "black",   # contour noir
-                    "weight": 2,        # épaisseur du contour
                     "radius": 10
                 },
                 "popup": str([str(n) + ' | ' + lib_noeud(probleme.graphe, n) for n in solution.etapesLots[lot]])
             }
         })
+
+        # Marqueur final coloré
+        lat_fin, lon_fin = graphe.nodes[solution.tracageLots[lot][-1]]['lat'], graphe.nodes[solution.tracageLots[lot][-1]]['lon']
+        dernierNoeud = solution.tracageLots[lot][-1]
+        tFin = instantDebut + solution.tracageLots[lot].index(dernierNoeud) * pasTemps
+        if dernierNoeud == lot.noeudDest:
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [lon_fin, lat_fin]},
+                "properties": {
+                    "times": [tFin.isoformat(), (instantDebut + len(solution.tracageLots[lot]) * pasTemps).isoformat()],
+                    "icon": "circle",
+                    "iconstyle": {
+                        "fillColor": 'green',  # couleur finale
+                        "fillOpacity": 1,
+                        "radius": 10,
+                        "color": "transparent",   # contour
+                    },
+                    "popup": f"Destination finale: {lot}"
+                }
+            })
 
 
     geojson = {
@@ -1024,13 +1086,25 @@ def generer_animation(probleme: Probleme, solution: Solution, config: Config,
 
     TimestampedGeoJson(
         data=geojson,
-        period="PT1M",
+        period=f"PT{int(ceil(pasTemps.seconds/60))}M",
         add_last_point=True,
         auto_play=True
     ).add_to(map)
 
     return map
 
+def afficher_solution(probleme: Probleme, sol: Solution):
+    print("------------------------------------")
+    print("             SOLUTION               ")
+    print("------------------------------------")
+    print("Étapes :")
+    for lot in probleme.lots:
+        print(" - " + str(lot) + ": " + str(sol.ind.etapesLots[lot]))
+    print("\nMouvements :")
+    for mot in probleme.mots:
+        print(" - " + str(mot))
+        for mvt in sol.ind.mvtsMotrices[mot]:
+            print("    " + str(mvt))
 
 
 # ---------------------------------------
@@ -1047,12 +1121,11 @@ def main():
     # Génération automatique d'un problème
     noeudsCapa = [n for n, d in graphe.nodes(data=True) if d.get('capacite') > 0]
     mots = []
-    for m in range(5):
+    for m in range(10):
         mots.append(Motrice(len(mots), random.choice(noeudsCapa), retourBase=True))
     lots = []
-    for l in range(30):
+    for l in range(50):
         dep, arr = random.sample(noeudsCapa, 2)
-        arr = 497       # Triage Lyon sud
         lots.append(Lot(len(lots), dep, arr, 0, 1))
     
      # Construction du problème
@@ -1064,9 +1137,10 @@ def main():
 
     # Résolution du problème
     sol = resoudre_probleme(config, probleme)
+    afficher_solution(probleme, sol)
     
     # Génération de l'animation
-    map = generer_animation(probleme, sol, config)
+    map = generer_animation(probleme, sol, config, pasTemps=timedelta(minutes=config.pasTemp))
     map.save("animation_trains.html")
 
 main()
