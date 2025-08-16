@@ -20,6 +20,7 @@ from collections import defaultdict
 from PIL import Image, ImageDraw
 import io, base64
 import signal
+from sys import maxsize
 
 # Pour l'interruption du programme
 def handler(signum, frame):
@@ -313,14 +314,14 @@ def extraire_noeud(graphe: nx.Graph, index: int):
     """
     return next((n for n, d in graphe.nodes(data=True) if d.get('index', 0) == index), None)
 
-def dijkstra_special(graphe, origine, dest, instant=0, filtre=None, dureeRebroussement=0):
+def dijkstra_special(graphe, origine, dest, instantInitial, fonctionCout, dureeRebroussement=0):
     """
     Variante de Dijkstra permettant de filtrer les arcs en fonction de l'instant.
     Détecte et pénalise également les rebroussements.
     Retourne un chemin et la liste des rebroussements.
     """
 
-    queue = [(instant, origine, [], [], None)]  # (tempsCumul, noeudActuel, chemin, noeudPrecedent)
+    queue = [(instantInitial, origine, [], [], None)]  # (tempsCumul, noeudActuel, chemin, noeudPrecedent)
     visites = {}
 
     while queue:
@@ -336,17 +337,17 @@ def dijkstra_special(graphe, origine, dest, instant=0, filtre=None, dureeRebrous
             return chemin, rebroussements
 
         for successeur in graphe[noeudActuel]:      # Parcours des successeurs
-            poids = graphe[noeudActuel][successeur]['weight']
-            if filtre is None or filtre(noeudActuel, successeur, instantActuel):
-                nouveauxRebroussements = rebroussements     # Par défaut, pas de copie
+            poids = fonctionCout(noeudActuel, successeur, instantActuel)
+            nouveauxRebroussements = rebroussements     # Par défaut, pas de copie
 
-                # Vérification des transitions de rebroussement (en fonction des angles de virages)
-                if noeudPrecedent and sorted([noeudPrecedent, successeur]) in graphe.nodes[noeudActuel]['transRebroussement']:
-                    dureeParcours = poids + dureeRebroussement
-                    nouveauxRebroussements = rebroussements + [(noeudActuel, instantActuel)]        # Copie et création d'une nouvelle liste
-                else:
-                    dureeParcours = poids
-                heapq.heappush(queue, (instantActuel + dureeParcours, successeur, chemin, nouveauxRebroussements, noeudActuel))     # Le noeud peut être emprunté, et est ajouté à la pile
+            # Vérification des transitions de rebroussement (en fonction des angles de virages)
+            if noeudPrecedent and sorted([noeudPrecedent, successeur]) in graphe.nodes[noeudActuel]['transRebroussement']:
+                dureeParcours = poids + dureeRebroussement
+                nouveauxRebroussements = rebroussements + [(noeudActuel, instantActuel)]        # Copie et création d'une nouvelle liste
+            else:
+                dureeParcours = poids
+            instantSuivant = maxsize if dureeParcours == maxsize else instantActuel + dureeParcours
+            heapq.heappush(queue, (instantSuivant, successeur, chemin, nouveauxRebroussements, noeudActuel))     # Le noeud peut être emprunté, et est ajouté à la pile
 
     return None, None
 
@@ -743,19 +744,25 @@ def resoudre_probleme(config: Config, probleme: Probleme):
 
                 # Si la motrice n'est pas à destination, génération d'un nouvel itinéraire
                 if derniersNoeudsMots[mot] != noeudCible and not itinerairesActuels.get(mot, None):
-                    def est_arc_disponible(u, v, t):                # Filtre pour Dijkstra
+                    def cout_arc(u, v, t, mot):
                         # Vérification des blocages initiaux du problème
                         for sillon in probleme.blocages.get((u, v), []):
                             if sillon.tempsDebut <= t < sillon.tempsFin and sillon.motrice != mot:
-                                return False
+                                return maxsize     # Nombre très grand
                         # Vérification des blocages ajoutés par les itinéraires
                         for sillon in blocagesItineraires.get((u, v), []):
                             if sillon.tempsDebut <= t < sillon.tempsFin and sillon.motrice != mot:
-                                return False
-                        return True
+                                return maxsize
+                        return probleme.graphe.edges[u, v]['weight']
                     
                     # Calcul de l'itinéraire
-                    itineraire, rebroussements = dijkstra_special(probleme.graphe, derniersNoeudsMots[mot], noeudCible, t, est_arc_disponible, dureeRebroussement=config.dureeRebroussement)
+                    itineraire, rebroussements = dijkstra_special(
+                        probleme.graphe, 
+                        derniersNoeudsMots[mot], 
+                        noeudCible, 
+                        t, 
+                        fonctionCout=lambda u, v, instant: cout_arc(u, v, instant, mot), 
+                        dureeRebroussement=config.dureeRebroussement)
                     itinerairesActuels[mot] = itineraire
 
                     # Si aucun itinéraire n'est disponible, la motrice est en attente à cet instant
@@ -1040,10 +1047,10 @@ def main():
     # Génération automatique d'un problème
     noeudsCapa = [n for n, d in graphe.nodes(data=True) if d.get('capacite') > 0]
     mots = []
-    for m in range(2):
+    for m in range(5):
         mots.append(Motrice(len(mots), random.choice(noeudsCapa), retourBase=True))
     lots = []
-    for l in range(4):
+    for l in range(30):
         dep, arr = random.sample(noeudsCapa, 2)
         arr = 497       # Triage Lyon sud
         lots.append(Lot(len(lots), dep, arr, 0, 1))
