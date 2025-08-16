@@ -1053,7 +1053,7 @@ def generer_animation(probleme: Probleme, solution: Solution, config: Config,
                     "fillOpacity": 1,
                     "radius": 10
                 },
-                "popup": str([str(n) + ' | ' + lib_noeud(probleme.graphe, n) for n in solution.etapesLots[lot]])
+                "popup": str([str(n) + ' | ' + lib_noeud(probleme.graphe, n) for n in solution.ind.etapesLots[lot]])
             }
         })
 
@@ -1101,7 +1101,7 @@ def afficher_solution(probleme: Probleme, sol: Solution):
     for lot in probleme.lots:
         print(" - " + str(lot) + ": " + str(sol.ind.etapesLots[lot]))
     print("\nMouvements :")
-    for mot in probleme.mots:
+    for mot in probleme.motrices:
         print(" - " + str(mot))
         for mvt in sol.ind.mvtsMotrices[mot]:
             print("    " + str(mvt))
