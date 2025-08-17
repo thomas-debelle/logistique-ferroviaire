@@ -40,23 +40,23 @@ class Config:
         self.nbLogsMax = 10
 
         # Paramètres de l'algorithme
-        self.nbGenerations = 500                        # Nombre de génération
+        self.nbGenerations = 1000                       # Nombre de génération
         self.taillePopulation = 100                     # Taille de la population
         self.cxpb = 0.85                                # Probabilité de croisement
         self.mutpb = 0.25                               # Probabilité de mutation
         
-        self.horizonTemp = 20000                         # Horizon temporel de la simulation (en min)
+        self.horizonTemp = 20000                        # Horizon temporel de la simulation (en min)
         self.pasTemp = 15                               # Pas temporel
-        self.limiteDureeItineraire = 10000              # Au delà de cette limite, les motrices attendent jusqu'à avoir un initinéraire plus favorable
-        self.tempoItineraireIndispo = 100                 # Temps d'attente si la limite de durée d'itinéraire est dépassée (pas d'itinéraire dispo)      # TODO: ajouter les deux
+        self.limiteDureeItineraire = 10000              # Si le meilleur itinéraire est plus long que cette limite, les motrices attendent jusqu'à avoir un itinéraire plus favorable.
+        self.tempoItineraireIndispo = 30                # Temps d'attente si la limite de durée d'itinéraire est dépassée (pas d'itinéraire dispo)      # TODO: ajouter les deux
 
-        self.ecartementMinimal = 8                      # Ecartement temporel minimal (en min) entre deux trains qui se suivent
-        self.dureeAttelage = 10                         # Temps de manoeuvre pour l'attelage (en min)
-        self.dureeDesattelage = 5                       # Temps de manoeuvre pour le désattelage (en min)
+        self.ecartementMinimal = 15                      # Ecartement temporel minimal (en min) entre deux trains qui se suivent
+        self.dureeAttelage = 15                         # Temps de manoeuvre pour l'attelage (en min)
+        self.dureeDesattelage = 15                       # Temps de manoeuvre pour le désattelage (en min)
         self.dureeRebroussement = 30                    # Temps supplémentaire ajouté en cas de rebroussement sur un arc (en min)
         self.dureeConservationBlocages = 50             # Nombre d'instants entre deux nettoyages des blocages temporaires
         self.lambdaTempsAttente = 20.0                  # Facteur d'échelle utilisé pour la distribution exponentielle des temps d'attente
-        self.orienterAjoutEtape = False                 # Si activé, une heuristique est utilisée pour orienter l'ajout d'étapes (recherche sur le plus court chemins entre les étapes précédentes et suivantes)
+        self.nbMaxMutationsSuccessives = 20            # Nombre maximum de mutations successives
 
         self.coutMax = 100000                            # Coût maximum, appliqué à l'objectif de distance si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
         self.coutFixeParMotrice = 0                     # Coût logistique fixe pour chaque motrice utilisée dans le problème
@@ -363,7 +363,8 @@ def resoudre_probleme(config: Config, probleme: Probleme):
     """
     Cherche une solution pour résoudre l'exploitation.
     """
-    noeudsCapa = [n for n, d in probleme.graphe.nodes(data=True) if d.get('capacite') > 0]        # Liste des noeuds avec une capacité de stockage, et pouvant être utilisés comme cible pour une étape de lot ou un mouvement de motrice
+    noeudsCapa = [n for n, d in probleme.graphe.nodes(data=True) if d.get('capacite') > 0]          # Liste des noeuds avec une capacité de stockage, et pouvant être utilisés comme cible pour une étape de lot ou un mouvement de motrice
+    noeudsCapaHorsITE = [n for n in noeudsCapa if probleme.graphe.nodes[n].get('capacite') > 0 and probleme.graphe.nodes[n].get("typeNoeud") != 'ITE']     # Liste des noeuds où le dépôt temporaire est autorisé (hors ITE).
 
     class Individu:
         def __init__(self, autreInd=None):
@@ -395,16 +396,22 @@ def resoudre_probleme(config: Config, probleme: Probleme):
             Attention, les mouvements doivent être liés.
             """
             # Recherche d'un emplacement pour les mouvements (avec respect de la causalité) 
-            mvtsInseres = False
+            premierIndiceValide = 0
+            dernierIndiceValide = len(self.mvtsMotrices[mot])
             for i, mvt in enumerate(self.mvtsMotrices[mot]):
-                if mvt.type == TypeMouvement.Deposer and mvt.lot == mvtRecup.lot and mvt.etape == mvtRecup.etape:
-                    self.mvtsMotrices[mot].insert(i+1, mvtRecup)
-                    self.mvtsMotrices[mot].insert(i+2, mvtDepose)        # Insertion des mouvements juste avant i
-                    mvtsInseres = True
-                    break 
-            if not mvtsInseres:
-                self.mvtsMotrices[mot].append(mvtRecup)
-                self.mvtsMotrices[mot].append(mvtDepose)
+                # Si juste après la dépose de l'étape précédente
+                if mvt.type == TypeMouvement.Deposer and mvt.lot == mvtRecup.lot and mvt.etape <= mvtRecup.etape:
+                    premierIndiceValide = i+1
+                # Si juste avant la récup de l'étape suivante
+                elif mvt.type == TypeMouvement.Recuperer and mvt.lot == mvtDepose.lot and mvt.etape >= mvtDepose.etape:
+                    dernierIndiceValide = i
+                    break   # Tous les indices suivants seront invalides
+
+            # Insertion aléatoire
+            i = random.randint(premierIndiceValide, dernierIndiceValide)
+            self.mvtsMotrices[mot].insert(i, mvtRecup)
+            self.mvtsMotrices[mot].insert(i+1, mvtDepose)
+            pass
 
         def extraire_mvt_lie(self, mot: Motrice, mvt: Mouvement):
             """
@@ -527,69 +534,66 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         return ind
     
     def muter_individu(ind: Individu):
-        tirageMut = random.choice([0, 1])
-        # Mutation des étapes (ajout, suppression)
-        if tirageMut == 0:
-            lot = random.choice(probleme.lots)
-            subTirageMut = random.choice([0, 1, 2]) if len(ind.etapesLots[lot]) > 2 else 0         # Pas de suppression ou variation si seulement origine et dest
-            # Ajout d'une étape
-            if subTirageMut == 0:
-                numEtape = random.randint(1, len(ind.etapesLots[lot]) - 1)      # Sélection d'un étape entre les étapes origine (exclue) et dest (inclue)
-                if config.orienterAjoutEtape:
-                    noeudsEligibles = list(set(noeudsCapa) & set(nx.shortest_path(probleme.graphe, ind.etapesLots[lot][numEtape-1], ind.etapesLots[lot][numEtape])))    # Intersection des noeuds de capacité non nulle ET sur le plus cours chemin (guidage par une heuristique)
-                    noeudsEligibles = noeudsEligibles + random.sample(noeudsCapa, len(noeudsEligibles))    # Ajout d'autres noeuds aléatoires dans les noeuds éligibles
-                    noeudEtape = random.choice(noeudsEligibles)                     # Tirage de l'étape
-                else:
-                    noeudEtape = random.choice(noeudsCapa)
-                ind.inserer_etape(lot, numEtape, noeudEtape, random.choice(probleme.motrices))
-            # Suppression d'un étape
-            elif subTirageMut == 1:  # Suppression uniquement si d'autres étapes que origine et dest
-                numEtape = random.randint(1, len(ind.etapesLots[lot]) - 2)       # Sélection d'un étape entre les étapes origine (exclue) et dest (exclue)
-                ind.supprimer_etape(lot, numEtape)
-            elif subTirageMut == 2:
-                numEtape = random.randint(1, len(ind.etapesLots[lot]) - 2)       # Sélection d'un étape entre les étapes origine (exclue) et dest (exclue)
-                ind.etapesLots[lot][numEtape] = random.choice(noeudsCapa)      # Sélection d'un noeud de capacité non nulle
+        for i in range(random.randint(1, config.nbMaxMutationsSuccessives)):
+            tirageMut = random.choice([0, 1])
+            # Mutation des étapes (ajout, suppression)
+            if tirageMut == 0:
+                lot = random.choice(probleme.lots)
+                subTirageMut = random.choice([0, 1, 2]) if len(ind.etapesLots[lot]) > 2 else 0         # Pas de suppression ou variation si seulement origine et dest
+                # Ajout d'une étape
+                if subTirageMut == 0:
+                    numEtape = random.randint(1, len(ind.etapesLots[lot]) - 1)      # Sélection d'un étape entre les étapes origine (exclue) et dest (inclue)
+                    noeudEtape = random.choice(noeudsCapaHorsITE)
+                    ind.inserer_etape(lot, numEtape, noeudEtape, random.choice(probleme.motrices))
+                # Suppression d'un étape
+                elif subTirageMut == 1:  # Suppression uniquement si d'autres étapes que origine et dest
+                    numEtape = random.randint(1, len(ind.etapesLots[lot]) - 2)       # Sélection d'un étape entre les étapes origine (exclue) et dest (exclue)
+                    ind.supprimer_etape(lot, numEtape)
+                # Modification d'une étape
+                elif subTirageMut == 2:
+                    numEtape = random.randint(1, len(ind.etapesLots[lot]) - 2)       # Sélection d'un étape entre les étapes origine (exclue) et dest (exclue)
+                    ind.etapesLots[lot][numEtape] = random.choice(noeudsCapaHorsITE)      # Sélection d'un noeud de capacité non nulle
 
-        # Mutation des mouvements (déplacement ou échange)
-        elif tirageMut == 1:
-            subTirageMut = random.choice([0, 1, 2])
-            # Déplacement de mouvements entre deux motrices
-            if subTirageMut == 0:
-                # Tirage des motrices
-                if len(probleme.motrices) < 2:
-                    return ind,
-                mots = random.sample(probleme.motrices, 2); motSource = mots[0]; motCible = mots[1]
-                # Tirage des mouvements
-                if len(ind.mvtsMotrices[motSource]) == 0:
-                    return ind,
-                mvtRecup, mvtDepose = ind.extraire_mvts_lies(motSource)
-                # Déplacement des mouvements
-                ind.mvtsMotrices[motSource].remove(mvtRecup)
-                ind.mvtsMotrices[motSource].remove(mvtDepose)
-                ind.inserer_mvts_lies(motCible, mvtRecup, mvtDepose)
-            # Echange de l'ordre des mouvements dans la séquence d'une même motrice
-            elif subTirageMut == 1:
-                # Tirage de la motrice et du mouvement
-                mot = random.choice(probleme.motrices)
-                if len(ind.mvtsMotrices[mot]) == 0:
-                    return ind,
-                mvt = random.choice(ind.mvtsMotrices[mot])
-                # Sélection d'une nouvelle position en respectant le mouvement lié
-                indexMvtLie, mvtLie = ind.extraire_mvt_lie(mot, mvt)
-                if mvt.type == TypeMouvement.Recuperer:
-                    nvIndexMvt = random.randint(0, indexMvtLie-1)
-                elif mvt.type == TypeMouvement.Deposer:
-                    nvIndexMvt = random.randint(indexMvtLie+1, len(ind.mvtsMotrices[mot])-1)
-                # Déplacement à la nouvelle position
-                ind.mvtsMotrices[mot].remove(mvt)
-                ind.mvtsMotrices[mot].insert(nvIndexMvt, mvt)
-            # Ajout d'une attente aléatoire
-            elif subTirageMut == 2:
-                mot = random.choice(probleme.motrices)
-                if len(ind.mvtsMotrices[mot]) == 0:
-                    return ind,
-                mvt = random.choice(ind.mvtsMotrices[mot])
-                mvt.attente += int(round(np.random.exponential(config.lambdaTempsAttente)))
+            # Mutation des mouvements (déplacement ou échange)
+            elif tirageMut == 1:
+                subTirageMut = random.choice([0, 1, 2])
+                # Déplacement de mouvements entre deux motrices
+                if subTirageMut == 0:
+                    # Tirage des motrices
+                    if len(probleme.motrices) < 2:
+                        return ind,
+                    mots = random.sample(probleme.motrices, 2); motSource = mots[0]; motCible = mots[1]
+                    # Tirage des mouvements
+                    if len(ind.mvtsMotrices[motSource]) == 0:
+                        return ind,
+                    mvtRecup, mvtDepose = ind.extraire_mvts_lies(motSource)
+                    # Déplacement des mouvements
+                    ind.mvtsMotrices[motSource].remove(mvtRecup)
+                    ind.mvtsMotrices[motSource].remove(mvtDepose)
+                    ind.inserer_mvts_lies(motCible, mvtRecup, mvtDepose)
+                # Echange de l'ordre des mouvements dans la séquence d'une même motrice
+                elif subTirageMut == 1:
+                    # Tirage de la motrice et du mouvement
+                    mot = random.choice(probleme.motrices)
+                    if len(ind.mvtsMotrices[mot]) == 0:
+                        return ind,
+                    mvt = random.choice(ind.mvtsMotrices[mot])
+                    # Sélection d'une nouvelle position en respectant le mouvement lié
+                    indexMvtLie, mvtLie = ind.extraire_mvt_lie(mot, mvt)
+                    if mvt.type == TypeMouvement.Recuperer:
+                        nvIndexMvt = random.randint(0, indexMvtLie-1)
+                    elif mvt.type == TypeMouvement.Deposer:
+                        nvIndexMvt = random.randint(indexMvtLie+1, len(ind.mvtsMotrices[mot])-1)
+                    # Déplacement à la nouvelle position
+                    ind.mvtsMotrices[mot].remove(mvt)
+                    ind.mvtsMotrices[mot].insert(nvIndexMvt, mvt)
+                # Ajout d'une attente aléatoire
+                elif subTirageMut == 2:
+                    mot = random.choice(probleme.motrices)
+                    if len(ind.mvtsMotrices[mot]) == 0:
+                        return ind,
+                    mvt = random.choice(ind.mvtsMotrices[mot])
+                    mvt.attente += int(round(np.random.exponential(config.lambdaTempsAttente)))
 
         return ind,
 
@@ -597,7 +601,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         enfant1 = Individu(ind1)
         enfant2 = Individu(ind2)
         # Croisement des étapes
-        lots = random.sample(probleme.lots, int(ceil(len(probleme.lots)/2)))
+        lots = random.sample(probleme.lots, random.randint(1, len(probleme.lots)))
         for lot in lots:
             enfant1, enfant2 = echanger_lot(ind1, ind2, lot)
         return creator.Individual(enfant1), creator.Individual(enfant2)
@@ -752,6 +756,7 @@ def resoudre_probleme(config: Config, probleme: Probleme):
                     if mot.retourBase and derniersNoeudsMots[mot] != mot.noeudOrigine:      # Si la motrice doit rentrer à la base
                         noeudCible = mot.noeudOrigine
                         mvtActuel = None                # Le retour à la base est un déplacement spécial en dehors des mouvements de l'individu
+                        # Pas de continue car l'itinéraire doit encore être évalué
                     else:
                         if not motsValides[mot]:
                             motsValides[mot] = True
@@ -904,8 +909,8 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         # Finalisation de la simulation
         for lot in probleme.lots:
             if not lotsValides[lot]:        # TODO: prendre en compte le retour à la base qui peut ne pas être terminé
-                objDeplacement = config.coutMax     # Neutralisation de l'objectif de déplacement : pas d'importance tant que tous les lots ne sont pas livrés
-                objCoutsLogistiques += (config.horizonTemp - lot.finCommande) * config.coeffRetard      # Ajout du retard maximal par rapport à l'horizon temporel
+                objDeplacement = config.coutMax             # Neutralisation de l'objectif de déplacement : pas d'importance tant que tous les lots ne sont pas livrés
+                objCoutsLogistiques = config.coutMax        #(config.horizonTemp - lot.finCommande) * config.coeffRetard      # Ajout du retard maximal par rapport à l'horizon temporel
         sol = Solution((objDeplacement, objCoutsLogistiques), tracageMots, tracageLots, tracageAttelages, ind)
         return sol
 
@@ -1053,7 +1058,7 @@ def generer_animation(probleme: Probleme, solution: Solution, config: Config,
                     "fillOpacity": 1,
                     "radius": 10
                 },
-                "popup": str([str(n) + ' | ' + lib_noeud(probleme.graphe, n) for n in solution.ind.etapesLots[lot]])
+                "popup": str(lot)
             }
         })
 
@@ -1121,10 +1126,10 @@ def main():
     # Génération automatique d'un problème
     noeudsCapa = [n for n, d in graphe.nodes(data=True) if d.get('capacite') > 0]
     mots = []
-    for m in range(10):
+    for m in range(5):
         mots.append(Motrice(len(mots), random.choice(noeudsCapa), retourBase=True))
     lots = []
-    for l in range(50):
+    for l in range(30):
         dep, arr = random.sample(noeudsCapa, 2)
         lots.append(Lot(len(lots), dep, arr, 0, 1))
     
@@ -1132,8 +1137,7 @@ def main():
     probleme = Probleme(graphe, mots, lots)
 
     # Ajout des blocages
-    # probleme.ajouter_blocage(Sillon(400, 132, 0, 1000, probleme.motrices[1]))
-    # probleme.ajouter_blocage(Sillon(132, 400, 0, 1000, probleme.motrices[1]))
+    #probleme.ajouter_blocage(Sillon(31, 3, 0, 1000, probleme.motrices[0]))
 
     # Résolution du problème
     sol = resoudre_probleme(config, probleme)
