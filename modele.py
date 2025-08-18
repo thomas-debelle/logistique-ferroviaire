@@ -22,6 +22,8 @@ import io, base64
 import signal
 from sys import maxsize
 from math import ceil
+from itertools import product
+import matplotlib.pyplot as plt
 
 # Pour l'interruption du programme
 def handler(signum, frame):
@@ -40,7 +42,7 @@ class Config:
         self.nbLogsMax = 10
 
         # Paramètres de l'algorithme
-        self.nbGenerations = 1000                       # Nombre de génération
+        self.nbGenerations = 300                        # Nombre de génération
         self.taillePopulation = 100                     # Taille de la population
         self.cxpb = 0.85                                # Probabilité de croisement
         self.mutpb = 0.25                               # Probabilité de mutation
@@ -50,15 +52,15 @@ class Config:
         self.limiteDureeItineraire = 10000              # Si le meilleur itinéraire est plus long que cette limite, les motrices attendent jusqu'à avoir un itinéraire plus favorable.
         self.tempoItineraireIndispo = 30                # Temps d'attente si la limite de durée d'itinéraire est dépassée (pas d'itinéraire dispo)      # TODO: ajouter les deux
 
-        self.ecartementMinimal = 15                      # Ecartement temporel minimal (en min) entre deux trains qui se suivent
+        self.ecartementMinimal = 15                     # Ecartement temporel minimal (en min) entre deux trains qui se suivent
         self.dureeAttelage = 15                         # Temps de manoeuvre pour l'attelage (en min)
-        self.dureeDesattelage = 15                       # Temps de manoeuvre pour le désattelage (en min)
+        self.dureeDesattelage = 15                      # Temps de manoeuvre pour le désattelage (en min)
         self.dureeRebroussement = 30                    # Temps supplémentaire ajouté en cas de rebroussement sur un arc (en min)
         self.dureeConservationBlocages = 50             # Nombre d'instants entre deux nettoyages des blocages temporaires
         self.lambdaTempsAttente = 20.0                  # Facteur d'échelle utilisé pour la distribution exponentielle des temps d'attente
-        self.nbMaxMutationsSuccessives = 20            # Nombre maximum de mutations successives
+        self.nbMaxMutationsSuccessives = 20             # Nombre maximum de mutations successives
 
-        self.coutMax = 100000                            # Coût maximum, appliqué à l'objectif de distance si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
+        self.coutMax = 100000                           # Coût maximum, appliqué à l'objectif de distance si toutes les livraisons ne sont pas réalisées dans l'horizon temporel
         self.coutFixeParMotrice = 0                     # Coût logistique fixe pour chaque motrice utilisée dans le problème
         self.coeffDeplacements = 1.0                    # Coefficient appliqué à l'objectif de déplacement
         self.coeffRetard = 1.0                          # Coefficient appliqué aux coûts de retard à l'arrivée
@@ -93,6 +95,19 @@ class Motrice:
 
     def __hash__(self):
         return hash(self.index)
+    
+    def to_dict(self):
+        return {
+            "index": self.index,
+            "noeudOrigine": self.noeudOrigine,
+            "capacite": self.capacite,
+            "retourBase": self.retourBase,
+            "taille": self.taille
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        return cls(**data)
 
 class Lot:
     """
@@ -123,6 +138,20 @@ class Lot:
 
     def __hash__(self):
         return hash(self.index)
+    
+    def to_dict(self):
+        return {
+            "index": self.index,
+            "noeudOrigine": self.noeudOrigine,
+            "noeudDest": self.noeudDest,
+            "debutCommande": self.debutCommande,
+            "finCommande": self.finCommande,
+            "taille": self.taille
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        return cls(**data)
     
 class Sillon:
     """
@@ -361,7 +390,8 @@ def dijkstra_special(graphe, origine, dest, instantInitial, fonctionCout, dureeR
 
 def resoudre_probleme(config: Config, probleme: Probleme):
     """
-    Cherche une solution pour résoudre l'exploitation.
+    Cherche une solution au problème ferroviaire.
+    Retourne : (solution sélectionnée, fronts de Pareto)
     """
     noeudsCapa = [n for n, d in probleme.graphe.nodes(data=True) if d.get('capacite') > 0]          # Liste des noeuds avec une capacité de stockage, et pouvant être utilisés comme cible pour une étape de lot ou un mouvement de motrice
     noeudsCapaHorsITE = [n for n in noeudsCapa if probleme.graphe.nodes[n].get('capacite') > 0 and probleme.graphe.nodes[n].get("typeNoeud") != 'ITE']     # Liste des noeuds où le dépôt temporaire est autorisé (hors ITE).
@@ -964,10 +994,11 @@ def resoudre_probleme(config: Config, probleme: Probleme):
         print("Arrêt demandé, terminaison de l'algorithme.")
 
     # Extraction du front de pareto et sélection d'une solution
-    frontPareto = tools.sortNondominated(pop, len(pop), first_front_only=True)[0]
-    sol = simuler_individu(frontPareto[0], tracage=True)        # Sélection d'un individu sur le front
+    fronts = tools.sortNondominated(pop, len(pop), first_front_only=True)
+    premierFront = fronts[0]
+    sol = simuler_individu(premierFront[0], tracage=True)        # Sélection d'un individu sur le front
     info(f'Solution sélectionnée: {sol.objs}')
-    return sol
+    return sol, fronts
 
 
 # ---------------------------------------
@@ -1113,7 +1144,7 @@ def afficher_solution(probleme: Probleme, sol: Solution):
 
 
 # ---------------------------------------
-# Processus principal
+# Processus principal (avec expériences)
 # ---------------------------------------
 def main():
     # Chargement de la config
@@ -1122,29 +1153,103 @@ def main():
 
     # Initialisation des données
     graphe = importer_graphe('graphe_ferroviaire.graphml')
-    
-    # Génération automatique d'un problème
     noeudsCapa = [n for n, d in graphe.nodes(data=True) if d.get('capacite') > 0]
-    mots = []
-    for m in range(5):
-        mots.append(Motrice(len(mots), random.choice(noeudsCapa), retourBase=True))
-    lots = []
-    for l in range(30):
-        dep, arr = random.sample(noeudsCapa, 2)
-        lots.append(Lot(len(lots), dep, arr, 0, 1))
     
-     # Construction du problème
-    probleme = Probleme(graphe, mots, lots)
+    # Lancement des expériences
+    numExp = 1
+    if numExp == 1:
+        # EXPÉRIENCE COMPLÈTE
+        mots = []
+        for m in range(10):
+            mots.append(Motrice(len(mots), random.choice(noeudsCapa), retourBase=True))
+        lots = []
+        for l in range(50):
+            dep, arr = random.sample(noeudsCapa, 2)
+            lots.append(Lot(len(lots), dep, arr, 0, 1))
+        
+        # Sérialisation du problème construit
+        data = {
+            "motrices": [m.to_dict() for m in mots],
+            "lots": [l.to_dict() for l in lots]
+        }
+        with open("probleme.json", "w") as f:
+            json.dump(data, f, indent=2)
 
-    # Ajout des blocages
-    #probleme.ajouter_blocage(Sillon(31, 3, 0, 1000, probleme.motrices[0]))
+        # Construction du problème
+        probleme = Probleme(graphe, mots, lots)
 
-    # Résolution du problème
-    sol = resoudre_probleme(config, probleme)
-    afficher_solution(probleme, sol)
-    
-    # Génération de l'animation
-    map = generer_animation(probleme, sol, config, pasTemps=timedelta(minutes=config.pasTemp))
-    map.save("animation_trains.html")
+        # Résolution du problème et affichage des fronts
+        sol, fronts = resoudre_probleme(config, probleme)
+        pointsFront = [ind.fitness.values for ind in fronts[0]]
+        plt.scatter([p[0] for p in pointsFront], [p[1] for p in pointsFront], color="red", label="Front de Pareto")
+        for i in range(1, len(fronts)):
+            pointsFront = [ind.fitness.values for ind in fronts[i]]
+            plt.scatter([p[0] for p in pointsFront], [p[1] for p in pointsFront], color="blue")
+        
+        plt.xlabel("Objectif Distance")
+        plt.ylabel("Objectif Surcoût")
+        plt.title("Front de Pareto")
+        plt.legend()
+        plt.show()
+
+        afficher_solution(probleme, sol)
+
+        # Génération de l'animation
+        map = generer_animation(probleme, sol, config, pasTemps=timedelta(minutes=config.pasTemp))
+        map.save("animation_trains.html")
+
+
+    elif numExp == 2:
+        # AJOUT DES BLOCAGES PAR LE GI (à lancer après l'exp 1)
+        #probleme.ajouter_blocage(Sillon(31, 3, 0, 1000, probleme.motrices[0]))
+        probleme = Probleme(graphe, mots, lots)
+
+        # Résolution du problème
+        sol, _ = resoudre_probleme(config, probleme)
+        afficher_solution(probleme, sol)
+
+        # Génération de l'animation
+        map = generer_animation(probleme, sol, config, pasTemps=timedelta(minutes=config.pasTemp))
+        map.save("animation_trains.html")
+
+
+    elif numExp == 3:
+        # EXPÉRIENCE DE PERFORMANCES
+        # Génération automatique des problèmes
+        noeudsCapa = [n for n, d in graphe.nodes(data=True) if d.get('capacite') > 0]
+        """
+        motsExps = [(1, [Motrice(0, random.choice(noeudsCapa), retourBase=True)]),
+        (3, [Motrice(i, random.choice(noeudsCapa), retourBase=True) for i in range(3)]),
+        (5, [Motrice(i, random.choice(noeudsCapa), retourBase=True) for i in range(5)]),
+        (10, [Motrice(i, random.choice(noeudsCapa), retourBase=True) for i in range(10)])]
+
+        lotsExps = [(1, [Lot(0, random.choice(noeudsCapa), random.choice(noeudsCapa), 0, 1)]),
+        (5, [Lot(i, random.choice(noeudsCapa), random.choice(noeudsCapa), 0, 1) for i in range(5)]),
+        (10, [Lot(i, random.choice(noeudsCapa), random.choice(noeudsCapa), 0, 1) for i in range(10)]),
+        (30, [Lot(i, random.choice(noeudsCapa), random.choice(noeudsCapa), 0, 1) for i in range(30)])]
+        """
+
+        # TEST A SUPPR
+        motsExps = [(1, [Motrice(0, random.choice(noeudsCapa), retourBase=True)]),
+        (3, [Motrice(i, random.choice(noeudsCapa), retourBase=True) for i in range(3)]),
+        (5, [Motrice(i, random.choice(noeudsCapa), retourBase=True) for i in range(5)]),
+        (10, [Motrice(i, random.choice(noeudsCapa), retourBase=True) for i in range(10)])]
+        lotsExps = [(8, [Lot(i, random.choice(noeudsCapa), random.choice(noeudsCapa), 0, 1) for i in range(8)])]
+        # -------------------
+
+        combs = product(motsExps, lotsExps)
+        for c in combs:
+            nbMots = c[0][0]
+            nbLots = c[1][0]
+            mots = c[0][1]
+            lots = c[1][1]
+
+            # Construction du problème et résolution
+            probleme = Probleme(graphe, mots, lots)
+            print('Problème : ' + str((nbMots, nbLots)))
+            sol, _ = resoudre_probleme(config, probleme)
+            afficher_solution(probleme, sol)
+            map = generer_animation(probleme, sol, config, pasTemps=timedelta(minutes=config.pasTemp))
+            map.save(f"animation_trains_{str((nbMots, nbLots))}.html")
 
 main()

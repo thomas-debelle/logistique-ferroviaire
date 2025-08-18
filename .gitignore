@@ -2,3 +2,5 @@ archives
 logs
 *.~lock*
 *.PDF
+*.png
+probleme.json
