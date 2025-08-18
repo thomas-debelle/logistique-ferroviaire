@@ -1,0 +1,167 @@
+------------------------------------
+             SOLUTION               
+------------------------------------
+Étapes :
+ - L0: [329, 343]
+ - L1: [309, 282]
+ - L2: [322, 301]
+ - L3: [346, 296]
+ - L4: [344, 287]
+ - L5: [323, 300]
+ - L6: [328, 282]
+ - L7: [333, 275]
+ - L8: [360, 303]
+ - L9: [331, 264]
+ - L10: [299, 306]
+ - L11: [290, 353]
+ - L12: [363, 325]
+ - L13: [266, 272]
+ - L14: [347, 275]
+ - L15: [272, 293]
+ - L16: [301, 328]
+ - L17: [278, 308]
+ - L18: [337, 327]
+ - L19: [308, 298]
+ - L20: [289, 320]
+ - L21: [274, 354]
+ - L22: [338, 306]
+ - L23: [334, 308]
+ - L24: [264, 325]
+ - L25: [301, 261]
+ - L26: [327, 335]
+ - L27: [337, 291]
+ - L28: [285, 359]
+ - L29: [276, 321]
+ - L30: [325, 326]
+ - L31: [360, 280]
+ - L32: [290, 308]
+ - L33: [306, 261]
+ - L34: [268, 361]
+ - L35: [302, 335]
+ - L36: [355, 262]
+ - L37: [294, 271]
+ - L38: [292, 300]
+ - L39: [272, 269]
+ - L40: [317, 269]
+ - L41: [354, 326]
+ - L42: [341, 344]
+ - L43: [324, 287]
+ - L44: [325, 269]
+ - L45: [260, 269]
+ - L46: [268, 264]
+ - L47: [332, 350]
+ - L48: [283, 353]
+ - L49: [319, 291]
+
+Mouvements :
+ - M0
+    (Recuperer, L0, 0, 0)
+    (Deposer, L0, 1, 0)
+    (Recuperer, L4, 0, 0)
+    (Recuperer, L3, 0, 0)
+    (Deposer, L3, 1, 0)
+    (Deposer, L4, 1, 0)
+    (Recuperer, L14, 0, 0)
+    (Deposer, L14, 1, 0)
+    (Recuperer, L17, 0, 0)
+    (Deposer, L17, 1, 0)
+    (Recuperer, L37, 0, 0)
+    (Deposer, L37, 1, 0)
+ - M1
+    (Recuperer, L6, 0, 0)
+    (Deposer, L6, 1, 0)
+    (Recuperer, L44, 0, 0)
+    (Deposer, L44, 1, 0)
+    (Recuperer, L25, 0, 0)
+    (Deposer, L25, 1, 0)
+    (Recuperer, L32, 0, 0)
+    (Deposer, L32, 1, 0)
+    (Recuperer, L7, 0, 0)
+    (Deposer, L7, 1, 0)
+ - M2
+    (Recuperer, L2, 0, 0)
+    (Deposer, L2, 1, 0)
+    (Recuperer, L16, 0, 0)
+    (Deposer, L16, 1, 0)
+    (Recuperer, L13, 0, 0)
+    (Deposer, L13, 1, 0)
+    (Recuperer, L36, 0, 0)
+    (Deposer, L36, 1, 0)
+ - M3
+    (Recuperer, L12, 0, 0)
+    (Deposer, L12, 1, 0)
+    (Recuperer, L10, 0, 0)
+    (Deposer, L10, 1, 0)
+    (Recuperer, L31, 0, 0)
+    (Deposer, L31, 1, 0)
+    (Recuperer, L40, 0, 0)
+    (Deposer, L40, 1, 0)
+    (Recuperer, L43, 0, 0)
+    (Deposer, L43, 1, 0)
+ - M4
+    (Recuperer, L23, 0, 0)
+    (Deposer, L23, 1, 0)
+    (Recuperer, L22, 0, 0)
+    (Deposer, L22, 1, 0)
+    (Recuperer, L29, 0, 0)
+    (Deposer, L29, 1, 0)
+    (Recuperer, L45, 0, 0)
+    (Deposer, L45, 1, 0)
+    (Recuperer, L38, 0, 0)
+    (Deposer, L38, 1, 0)
+ - M5
+    (Recuperer, L8, 0, 0)
+    (Deposer, L8, 1, 0)
+    (Recuperer, L20, 0, 0)
+    (Deposer, L20, 1, 0)
+    (Recuperer, L27, 0, 0)
+    (Deposer, L27, 1, 0)
+    (Recuperer, L46, 0, 0)
+    (Deposer, L46, 1, 0)
+    (Recuperer, L18, 0, 0)
+    (Deposer, L18, 1, 0)
+    (Recuperer, L48, 0, 0)
+    (Deposer, L48, 1, 0)
+ - M6
+    (Recuperer, L1, 0, 0)
+    (Deposer, L1, 1, 0)
+    (Recuperer, L5, 0, 0)
+    (Deposer, L5, 1, 0)
+    (Recuperer, L9, 0, 0)
+    (Deposer, L9, 1, 0)
+    (Recuperer, L24, 0, 0)
+    (Deposer, L24, 1, 0)
+    (Recuperer, L41, 0, 0)
+    (Deposer, L41, 1, 0)
+    (Recuperer, L47, 0, 0)
+    (Deposer, L47, 1, 0)
+ - M7
+    (Recuperer, L28, 0, 0)
+    (Deposer, L28, 1, 0)
+    (Recuperer, L19, 0, 0)
+    (Deposer, L19, 1, 0)
+    (Recuperer, L35, 0, 0)
+    (Deposer, L35, 1, 0)
+    (Recuperer, L42, 0, 0)
+    (Deposer, L42, 1, 0)
+ - M8
+    (Recuperer, L15, 0, 0)
+    (Deposer, L15, 1, 0)
+    (Recuperer, L30, 0, 0)
+    (Deposer, L30, 1, 0)
+    (Recuperer, L49, 0, 0)
+    (Deposer, L49, 1, 0)
+    (Recuperer, L21, 0, 0)
+    (Deposer, L21, 1, 0)
+    (Recuperer, L26, 0, 0)
+    (Deposer, L26, 1, 0)
+ - M9
+    (Recuperer, L11, 0, 0)
+    (Recuperer, L39, 0, 0)
+    (Deposer, L11, 1, 0)
+    (Deposer, L39, 1, 0)
+    (Recuperer, L33, 0, 0)
+    (Deposer, L33, 1, 0)
+    (Recuperer, L34, 0, 0)
+    (Deposer, L34, 1, 0)
+

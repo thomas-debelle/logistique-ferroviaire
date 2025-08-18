@@ -47,7 +47,7 @@ class Config:
         self.cxpb = 0.85                                # Probabilité de croisement
         self.mutpb = 0.25                               # Probabilité de mutation
         
-        self.horizonTemp = 20000                        # Horizon temporel de la simulation (en min)
+        self.horizonTemp = 30000                        # Horizon temporel de la simulation (en min)
         self.pasTemp = 15                               # Pas temporel
         self.limiteDureeItineraire = 10000              # Si le meilleur itinéraire est plus long que cette limite, les motrices attendent jusqu'à avoir un itinéraire plus favorable.
         self.tempoItineraireIndispo = 30                # Temps d'attente si la limite de durée d'itinéraire est dépassée (pas d'itinéraire dispo)      # TODO: ajouter les deux
@@ -1201,8 +1201,16 @@ def main():
 
     elif numExp == 2:
         # AJOUT DES BLOCAGES PAR LE GI (à lancer après l'exp 1)
-        #probleme.ajouter_blocage(Sillon(31, 3, 0, 1000, probleme.motrices[0]))
+        with open("probleme.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            mots = [Motrice.from_dict(m) for m in data["motrices"]]
+            lots = [Lot.from_dict(l) for l in data["lots"]]
+
         probleme = Probleme(graphe, mots, lots)
+        probleme.ajouter_blocage(Sillon(145, 202, 0, 1440))
+        probleme.ajouter_blocage(Sillon(61, 146, 0, config.horizonTemp))
+        probleme.ajouter_blocage(Sillon(146, 61, 0, config.horizonTemp))
+
 
         # Résolution du problème
         sol, _ = resoudre_probleme(config, probleme)
@@ -1229,7 +1237,7 @@ def main():
         (30, [Lot(i, random.choice(noeudsCapa), random.choice(noeudsCapa), 0, 1) for i in range(30)])]
         """
 
-        # TEST A SUPPR
+        # TEST A SUPPR (pour rajouter un point à l'estimation du temps)
         motsExps = [(1, [Motrice(0, random.choice(noeudsCapa), retourBase=True)]),
         (3, [Motrice(i, random.choice(noeudsCapa), retourBase=True) for i in range(3)]),
         (5, [Motrice(i, random.choice(noeudsCapa), retourBase=True) for i in range(5)]),

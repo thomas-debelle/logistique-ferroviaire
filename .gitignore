@@ -4,3 +4,4 @@ logs
 *.PDF
 *.png
 probleme.json
+__pycache__
